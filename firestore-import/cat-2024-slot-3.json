@@ -1,0 +1,112 @@
+[
+  {
+    "question": "The number of distinct integer solutions (x, y) of the equation |x+y|+|x-y|=2, is",
+    "answer": "8",
+    "explanation": "For integer pairs, the identity $|x+y|+|x-y|=2\\max(|x|,|y|)$ reduces the equation to $\\max(|x|,|y|)=1$. The integer lattice points on the boundary of this square are the eight pairs with coordinates in $\\{-1,0,1\\}$ except $(0,0)$. So the answer is 8."
+  },
+  {
+    "question": "For some constant real numbers p, k and a, consider the following system of linear equations in x and y: p x-4 y=2; 3 x+k y=a. A necessary condition for the system to have no solution for (x, y), is",
+    "answer": "A",
+    "explanation": "For two lines to have no intersection, their coefficient ratios must match while their constant-term ratios differ: $p/3=-4/k \\ne 2/a$. The first equality gives $pk+12=0$. The inequality $-4/k \\ne 2/a$ simplifies to $2a+k \\ne 0$, which is the necessary condition among the choices."
+  },
+  {
+    "question": "If (a+b sqrt(3))^2=52+30 sqrt(3), where a and b are natural numbers, then a+b equals",
+    "answer": "C",
+    "explanation": "Expand the left side: $a^2+3b^2+2ab\\sqrt{3}=52+30\\sqrt{3}$. Comparing rational and irrational parts gives $a^2+3b^2=52$ and $ab=15$. The natural-number pair satisfying both is $(a,b)=(5,3)$, so $a+b=8$."
+  },
+  {
+    "question": "A circular plot of land is divided into two regions by a chord of length 10 sqrt(3) meters such that the chord subtends an angle of 120 degrees at the center. Then, the area, in square meters, of the smaller region is",
+    "answer": "C",
+    "explanation": "Bisecting the chord forms a right triangle with half-chord $5\\sqrt{3}$ and a $30^\\circ$ angle, giving radius $r=10$ m. The smaller segment area is the $120^\\circ$ sector minus the triangle: $(120/360)\\pi(10)^2-(1/2)(10\\sqrt{3})(5)=25(4\\pi/3-\\sqrt{3})$ square meters."
+  },
+  {
+    "question": "In a group of 250 students, the percentage of girls was at least 44% and at most 60%. The rest of the students were boys. Each student opted for either swimming or running or both. If 50% of the boys and 80% of the girls opted for swimming while 70% of the boys and 60% of the girls opted for running, then the minimum and maximum possible number of students who opted for both swimming and running, are",
+    "answer": "A",
+    "explanation": "For boys, the swimming and running percentages total 120%, so 20% of boys do both. For girls they total 140%, so 40% of girls do both. If there are $G$ girls, the overlap is $0.2(250-G)+0.4G=50+0.2G$. The permitted girl counts range from 110 to 150, giving a minimum of 72 and maximum of 80 students."
+  },
+  {
+    "question": "If 10^68 is divided by 13, the remainder is",
+    "answer": "B",
+    "explanation": "The remainders of powers of 10 modulo 13 repeat every 6 powers because $10^6\\equiv1\\pmod{13}$. Since $68\\equiv2\\pmod6$, $10^{68}$ has the same remainder as $10^2=100$, which is 9 modulo 13."
+  },
+  {
+    "question": "The midpoints of sides AB, BC, and AC in triangle ABC are M, N, and P, respectively. The medians drawn from A, B, and C intersect the line segments MP, MN and NP at X, Y and Z, respectively. If the area of triangle ABC is 1440 sq cm, then the area, in sq cm, of triangle XYZ is",
+    "answer": "90",
+    "explanation": "The medial triangle $MNP$ has one-quarter the area of $ABC$, so its area is $1440/4=360$. The same midpoint relationship makes $XYZ$ one-quarter the area of $MNP$. Thus its area is $360/4=90$ cm$^2$."
+  },
+  {
+    "question": "After two successive increments, Gopal's salary became 187.5% of his initial salary. If the percentage of salary increase in the second increment was twice of that in the first increment, then the percentage of salary increase in the first increment was",
+    "answer": "C",
+    "explanation": "Let the first increment be $x$ as a decimal; the second is $2x$. The salary multiplier is $(1+x)(1+2x)=1.875$. Testing the listed choices, $x=0.25$ gives $1.25\\times1.50=1.875$. Therefore the first increment was 25%."
+  },
+  {
+    "question": "Sam can complete a job in 20 days when working alone. Mohit is twice as fast as Sam and thrice as fast as Ayna in the same job. They undertake a job with an arrangement where Sam and Mohit work together on the first day, Sam and Ayna on the second day, Mohit and Ayna on the third day, and this three-day pattern is repeated till the work gets completed. Then, the fraction of total work done by Sam is",
+    "answer": "B",
+    "explanation": "Use daily rates in the ratio Sam:Mohit:Ayna = 3:6:2, or $3k,6k,2k$. One three-day cycle completes $9k+5k+8k=22k$. After two cycles, 44k is done; on day 7 another 9k is done, leaving 7k. Day 8 completes 5k, and 2k remain for day 9, when Sam is not working. Sam contributed $3k$ on each of days 1, 2, 4, 5, 7, and 8: $18k$ of total work $60k$, so the fraction is $3/10$."
+  },
+  {
+    "question": "A certain amount of water was poured into a 300 litre container and the remaining portion of the container was filled with milk. Then an amount of this solution was taken out from the container which was twice the volume of water that was earlier poured into it, and water was poured to refill the container again. If the resulting solution contains 72% milk, then the amount of water, in litres, that was initially poured into the container was",
+    "answer": "30",
+    "explanation": "Initially there are $300-x$ litres of milk. Removing $2x$ litres of a well-mixed solution retains the fraction $1-2x/300$ of the milk. The final milk volume is $0.72(300)=216$, so $(300-x)(1-2x/300)=216$. Solving gives $x=30$ or 420; 420 exceeds the container capacity, so $x=30$ litres."
+  },
+  {
+    "question": "Aman invests Rs 4000 in a bank at a certain rate of interest, compounded annually. If the ratio of the value of the investment after 3 years to the value of the investment after 5 years is 25 : 36, then the minimum number of years required for the value of the investment to exceed Rs 20000 is",
+    "answer": "9",
+    "explanation": "The ratio cancels the first three years, leaving $(1+r)^2=36/25$, so the annual growth factor is $1+r=6/5=1.2$. We need $4000(1.2)^n>20000$, or $(1.2)^n>5$. Since $1.2^8<5$ and $1.2^9>5$, the minimum is 9 years."
+  },
+  {
+    "question": "Gopi marks a price on a product in order to make 20% profit. Ravi gets 10% discount on this marked price, and thus saves Rs 15. Then, the profit, in rupees, made by Gopi by selling the product to Ravi, is",
+    "answer": "B",
+    "explanation": "Let the cost price be $C$. The marked price is $1.2C$. The discount is 10% of the marked price, or $0.12C$, and equals Rs 15; hence $C=125$. The selling price is Rs 135, so the profit is Rs 10."
+  },
+  {
+    "question": "The average of three distinct real numbers is 28. If the smallest number is increased by 7 and the largest number is reduced by 10, the order of the numbers remains unchanged, and the new arithmetic mean becomes 2 more than the middle number, while the difference between the largest and the smallest numbers becomes 64. Then, the largest number in the original set of three numbers is",
+    "answer": "70",
+    "explanation": "Write the original numbers as $x<y<z$. Their sum is 84. After the changes, the sum is 81, so the new mean is 27; since this is two more than $y$, $y=25$. Thus $x+z=59$. The new range condition gives $(z-10)-(x+7)=64$, so $z-x=81$. Adding these equations gives $2z=140$, hence $z=70$."
+  },
+  {
+    "question": "The number of all positive integers up to 500 with non-repeating digits is",
+    "answer": "378",
+    "explanation": "There are 9 one-digit positive integers. For two-digit numbers, choose a nonzero tens digit in 9 ways and a different units digit in 9 ways: 81. For three-digit numbers up to 500, the hundreds digit is 1 through 4 (4 ways), the tens digit has 9 remaining choices, and the units digit has 8: 288. Total: $9+81+288=378$."
+  },
+  {
+    "question": "A train travelled a certain distance at a uniform speed. Had the speed been 6 km per hour more, it would have needed 4 hours less. Had the speed been 6 km per hour less, it would have needed 6 hours more. The distance, in km, travelled by the train is",
+    "answer": "B",
+    "explanation": "Let speed be $v$ km/h and time be $t$ hours. Equating the distance in the faster case gives $vt=(v+6)(t-4)$, or $3t-2v=12$. The slower case gives $vt=(v-6)(t+6)$, or $v-t=6$. Solving gives $t=24$ and $v=30$, so distance $vt=720$ km."
+  },
+  {
+    "question": "If 3^a=4, 4^b=5, 5^c=6, 6^d=7, 7^e=8 and 8^f=9, then the value of the product abcdef is",
+    "answer": "2",
+    "explanation": "Taking logarithms gives $a=\\log_3 4$, $b=\\log_4 5$, and so on. Multiplying telescopes: $abcdef=\\log_3 9=2$."
+  },
+  {
+    "question": "Consider the sequence t1=1, t2=-1 and tn=((n-3)/(n-1))t(n-2) for n>=3. Then, the value of the sum 1/t2+1/t4+1/t6+...+1/t2022+1/t2024, is",
+    "answer": "C",
+    "explanation": "For even indices, the recurrence gives $t_{2k}=-1/(2k-1)$: the first terms are $-1,-1/3,-1/5,\\ldots$. Thus each reciprocal is the negative of an odd number from 1 through 2023. There are 1012 such odd numbers, whose sum is $1012^2=1,024,144$. The required sum is $-1,024,144$."
+  },
+  {
+    "question": "The number of distinct real values of x, satisfying the equation max{x,2}-min{x,2}=|x+2|-|x-2|, is",
+    "answer": "2",
+    "explanation": "The left side is $|x-2|$, so the equation becomes $2|x-2|=|x+2|$. Squaring gives $4(x-2)^2=(x+2)^2$, or $3x^2-20x+12=0$. The roots are 6 and $2/3$; both satisfy the original equation. Therefore there are 2 distinct values."
+  },
+  {
+    "question": "Rajesh and Vimal own 20 hectares and 30 hectares of agricultural land, respectively, which are entirely covered by wheat and mustard crops. The cultivation area of wheat and mustard in the land owned by Vimal are in the ratio of 5:3. If the total cultivation area of wheat and mustard are in the ratio 11:9, then the ratio of cultivation area of wheat and mustard in the land owned by Rajesh is",
+    "answer": "B",
+    "explanation": "Across 50 hectares, wheat totals $(11/20)50=27.5$ ha and mustard totals $(9/20)50=22.5$ ha. Vimal has 18.75 ha wheat and 11.25 ha mustard. Subtracting leaves Rajesh with 8.75 ha wheat and 11.25 ha mustard, a ratio of 7:9."
+  },
+  {
+    "question": "For any non-zero real number x, let f(x)+2f(1/x)=3x. Then, the sum of all possible values of x for which f(x)=3, is",
+    "answer": "B",
+    "explanation": "Replace $x$ by $1/x$ to get $f(1/x)+2f(x)=3/x$. Solving these two equations yields $f(x)=2/x-x$. Setting this equal to 3 gives $x^2+3x-2=0$. The sum of the roots is $-3$."
+  },
+  {
+    "question": "A regular octagon ABCDEFGH has sides of length 6 cm each. Then the area, in sq. cm, of the square ACEG is",
+    "answer": "C",
+    "explanation": "A regular octagon's interior angle is $135^\\circ$. In triangle $ABC$, sides $AB$ and $BC$ are both 6 cm and the included angle is $135^\\circ$. By the cosine rule, $AC^2=6^2+6^2-2(6)(6)\\cos135^\\circ=36(2+\\sqrt{2})$. Since $AC$ is a side of square $ACEG$, this is the square's area."
+  },
+  {
+    "question": "The sum of all distinct real values of x that satisfy the equation 10^x+4/(10^x)=17/2, is",
+    "answer": "A",
+    "explanation": "Set $y=10^x>0$. Then $y+4/y=17/2$, so $2y^2-17y+8=0=(2y-1)(y-8)$. Thus $y=1/2$ or 8, giving $x=-\\log_{10}2$ or $x=3\\log_{10}2$. Their sum is $2\\log_{10}2$."
+  }
+]

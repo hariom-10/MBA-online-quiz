@@ -7,7 +7,10 @@ import {
 import { initialChapters, initialExams, initialQuestions, initialSections } from "./data";
 import { applyClassification, classifyQuestion, type QuestionClassification } from "./classifier";
 import { demoAnswerKeys } from "./demoAnswerKeys";
+import { findCat2024Slot3Solution } from "./cat2024Slot3Solutions";
 import { MathContent, MathPreview } from "./MathContent";
+import { firestore, isFirebaseConfigured } from "./firebase";
+import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
 import {
   clearLocalSession, createLocalStudent, deleteLocalStudent, loginLocalAccount, readLocalAttemptEvents,
   readLocalStudents, recordLocalAttempt, resetLocalStudentPassword, restoreLocalSession as restoreAccountSession,
@@ -16,7 +19,7 @@ import {
 import type { Answer, Attempt, Chapter, Difficulty, Exam, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, UserProfile } from "./model";
 
 type View = "dashboard" | "practice" | "random" | "wrong" | "progress" | "reports" | "admin";
-type QuizState = { questions: Question[]; index: number; answers: Record<string, Answer | null>; title: string; origin: View; sessionId: string };
+type QuizState = { questions: Question[]; index: number; answers: Record<string, string | null>; title: string; origin: View; sessionId: string };
 type EntityType = "exam" | "section" | "chapter" | "question";
 type Entity = Exam | Section | Chapter | Question;
 type LoginKind = "student" | "admin";
@@ -52,6 +55,70 @@ function percent(a: number, b: number) {
 function titleCase(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+function normalizedAnswer(value: string) {
+  return value.trim().replace(/,/g, "").replace(/\s+/g, " ").toLowerCase();
+}
+function numericAnswer(value: string): number | undefined {
+  const cleaned = value.trim().replace(/,/g, "").replace(/\s/g, "");
+  const fraction = cleaned.match(/^(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/);
+  if (fraction) {
+    const denominator = Number(fraction[2]);
+    return denominator ? Number(fraction[1]) / denominator : undefined;
+  }
+  if (!/^-?\d+(?:\.\d+)?$/.test(cleaned)) return undefined;
+  return Number(cleaned);
+}
+function isCorrectAnswer(question: Question, submitted: string) {
+  if (question.answerMode !== "text") return normalizedAnswer(submitted) === normalizedAnswer(question.correctAnswer ?? "");
+  const expectedNumber = numericAnswer(question.correctAnswer ?? "");
+  const submittedNumber = numericAnswer(submitted);
+  return expectedNumber !== undefined && submittedNumber !== undefined
+    ? Math.abs(expectedNumber - submittedNumber) < 1e-9
+    : normalizedAnswer(submitted) === normalizedAnswer(question.correctAnswer ?? "");
+}
+function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: string, sections: Section[], chapters: Chapter[]): Question {
+  const questionText = typeof row.question === "string" ? row.question : "";
+  const pdfSolution = examId === "cat" ? findCat2024Slot3Solution(questionText) : undefined;
+  const category = typeof row.category === "string" ? row.category.trim() : "";
+  const section = sections.find((item) => item.examId === examId && item.name.trim().toLowerCase() === category.toLowerCase())
+    ?? sections.find((item) => item.examId === examId);
+  const chapter = section && chapters.find((item) => item.sectionId === section.id);
+  const options = {
+    A: typeof row.optionA === "string" ? row.optionA : "",
+    B: typeof row.optionB === "string" ? row.optionB : "",
+    C: typeof row.optionC === "string" ? row.optionC : "",
+    D: typeof row.optionD === "string" ? row.optionD : "",
+  };
+  const answer = pdfSolution?.answer ?? (typeof row.answer === "string" ? row.answer.trim() : "");
+  const noOptions = Object.values(options).every((option) => !option.trim());
+  const answerLetter = (["A", "B", "C", "D"] as const).find((letter) => letter === answer.toUpperCase())
+    ?? (["A", "B", "C", "D"] as const).find((letter) => options[letter].trim().toLowerCase() === answer.toLowerCase());
+  return {
+    id: `firestore-${id}`,
+    examId,
+    sectionId: section?.id ?? `${examId}-uncategorized`,
+    chapterId: chapter?.id ?? `${examId}-uncategorized-chapter`,
+    topic: category || undefined,
+    question: questionText,
+    options,
+    answerMode: noOptions ? "text" : "choice",
+    correctAnswer: noOptions ? answer || undefined : answerLetter,
+    hasAnswerKey: Boolean(noOptions ? answer : answerLetter),
+    explanation: pdfSolution?.explanation ?? (typeof row.explanation === "string" ? row.explanation : ""),
+    difficulty: "Medium",
+  };
+}
+async function fetchFirestoreExamQuestions(examId: string, sections: Section[], chapters: Chapter[]): Promise<Question[]> {
+  if (!firestore) throw new Error("Firebase is not configured. Add your Firebase Web App values to .env.local and restart the app.");
+  const examCode = examId.toUpperCase();
+  const examQuery = query(collection(firestore, "examQuestions"), where("exam", "==", examCode));
+  const snapshot = await getDocs(examQuery);
+  return snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), examId, sections, chapters))
+    .filter((question) => question.question.trim()
+      && (question.answerMode === "text"
+        ? Object.values(question.options).every((option) => !option.trim())
+        : Object.values(question.options).every((option) => option.trim())));
+}
 type AnswerCheck = { kind: "mismatch" | "review"; message: string } | null;
 function checkMathAnswer(question: Pick<Question, "question" | "options" | "correctAnswer" | "explanation">): AnswerCheck {
   if (!question.correctAnswer) return null;
@@ -72,7 +139,8 @@ function checkMathAnswer(question: Pick<Question, "question" | "options" | "corr
   const numericAnswer = explanation.match(/(?:final\s+answer|answer|therefore|hence|thus|so)\s*(?:is|=|:)?\s*([-+]?\d+(?:\.\d+)?)(?:\s*\.|$|\s)/i);
   if (numericAnswer?.[1]) {
     const calculated = Number(numericAnswer[1]);
-    const selected = Number(question.options[question.correctAnswer ?? "A"]?.replace(/[₹$,%\s,]/g, ""));
+    const correctKey = answerOptions.find((letter) => letter === question.correctAnswer) ?? "A";
+    const selected = Number(question.options[correctKey]?.replace(/[^\d.\-]/g, ""));
     if (Number.isFinite(calculated) && Number.isFinite(selected) && Math.abs(calculated - selected) > 1e-9) {
       return { kind: "mismatch", message: `The explanation's stated result (${calculated}) does not match option ${question.correctAnswer} (${selected}).` };
     }
@@ -89,7 +157,11 @@ export default function App() {
   const [sections, setSections] = useState<Section[]>(() => readLocal("mba-sections", initialSections));
   const [chapters, setChapters] = useState<Chapter[]>(() => readLocal("mba-chapters", initialChapters));
   const [questions, setQuestions] = useState<Question[]>(() => readLocal<Question[]>("mba-questions", initialQuestions)
+    .filter((question) => question.examId === "mat")
     .map((question) => demoAnswerKeys[question.id] ? { ...question, ...demoAnswerKeys[question.id] } : question));
+  const [examQuestionsLoading, setExamQuestionsLoading] = useState(false);
+  const [examQuestionsError, setExamQuestionsError] = useState("");
+  const [questionLoadRevision, setQuestionLoadRevision] = useState(0);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [adminAttempts, setAdminAttempts] = useState<(Attempt & { userId: string })[]>([]);
   const [questionReports, setQuestionReports] = useState<QuestionReport[]>([]);
@@ -110,6 +182,7 @@ export default function App() {
   const [loginKind, setLoginKind] = useState<LoginKind | "choose">("choose");
   const [authBusy, setAuthBusy] = useState(false);
   const [savingQuestionId, setSavingQuestionId] = useState<string | null>(null);
+  const [typedAnswer, setTypedAnswer] = useState("");
   const answerLock = useRef(false);
   const [adminArea, setAdminArea] = useState<AdminArea>("dashboard");
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -131,6 +204,10 @@ export default function App() {
     }
     setAttempts(readLocal(`mba-progress-${profile.uid}`, []));
   }, [profile]);
+
+  useEffect(() => {
+    setTypedAnswer("");
+  }, [quiz?.questions[quiz.index]?.id]);
 
   useEffect(() => {
     if (!profile) {
@@ -155,8 +232,54 @@ export default function App() {
     localStorage.setItem("mba-exams", JSON.stringify(exams));
     localStorage.setItem("mba-sections", JSON.stringify(sections));
     localStorage.setItem("mba-chapters", JSON.stringify(chapters));
-    localStorage.setItem("mba-questions", JSON.stringify(questions));
+    const previouslySavedQuestions = readLocal<Question[]>("mba-questions", []);
+    const preservedCloudExamRecords = previouslySavedQuestions.filter((question) => ["cat", "cmat", "xat"].includes(question.examId));
+    const localQuestions = questions.filter((question) => question.examId === "mat");
+    localStorage.setItem("mba-questions", JSON.stringify([...localQuestions, ...preservedCloudExamRecords]));
   }, [exams, sections, chapters, questions]);
+
+  useEffect(() => {
+    setQuestions((current) => current.filter((question) => !["cat", "cmat", "xat"].includes(question.examId)));
+    if (!selectedExam || !["cat", "cmat", "xat"].includes(selectedExam)) {
+      setExamQuestionsLoading(false);
+      setExamQuestionsError("");
+      return;
+    }
+    if (!isFirebaseConfigured || !firestore) {
+      setExamQuestionsLoading(false);
+      setExamQuestionsError("Firebase is not configured yet. Add your Firebase Web App values to .env.local and restart the app.");
+      return;
+    }
+
+    setExamQuestionsLoading(true);
+    setExamQuestionsError("");
+    const examCode = selectedExam.toUpperCase();
+    const examQuery = query(collection(firestore, "examQuestions"), where("exam", "==", examCode));
+    return onSnapshot(examQuery, (snapshot) => {
+      const nextQuestions = snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), selectedExam, sections, chapters))
+        .filter((question) => question.question.trim()
+          && (question.answerMode === "text"
+            ? Object.values(question.options).every((option) => !option.trim())
+            : Object.values(question.options).every((option) => option.trim())));
+      setQuestions((current) => [
+        ...current.filter((question) => question.examId !== selectedExam),
+        ...nextQuestions,
+      ]);
+      const refreshedById = new Map(nextQuestions.map((question) => [question.id, question]));
+      setQuiz((current) => current ? {
+        ...current,
+        questions: current.questions.map((question) => current.answers[question.id] === undefined
+          ? refreshedById.get(question.id) ?? question
+          : question),
+      } : current);
+      setExamQuestionsLoading(false);
+      setExamQuestionsError("");
+    }, (reason) => {
+      console.error(`Firestore question listener failed for ${examCode}:`, reason);
+      setExamQuestionsLoading(false);
+      setExamQuestionsError(`Could not load ${examCode} questions. Check your Firebase configuration, Firestore rules, and internet connection, then try again.`);
+    });
+  }, [selectedExam, sections, chapters, questionLoadRevision]);
 
   useEffect(() => {
     localStorage.setItem("mba-dark-mode", JSON.stringify(darkMode));
@@ -202,19 +325,19 @@ export default function App() {
     setResult(null);
     setMobileMenu(false);
   }
-  async function persistAttempt(question: Question, answer: Answer): Promise<Attempt & { correctAnswer: Answer; explanation: string }> {
+  async function persistAttempt(question: Question, answer: string): Promise<Attempt & { correctAnswer: string; explanation: string }> {
     if (!profile) {
       setAuthOpen(true);
       throw new Error("Sign in to save your answers and progress.");
     }
     const sessionId = quiz?.sessionId ?? makeId("session");
-    let attempt: Attempt & { correctAnswer: Answer; explanation: string };
+    let attempt: Attempt & { correctAnswer: string; explanation: string };
     if (!question.correctAnswer) throw new Error("This question does not have an answer key yet.");
     attempt = {
       questionId: question.id,
       examId: question.examId,
       selectedAnswer: answer,
-      isCorrect: question.correctAnswer === answer,
+      isCorrect: isCorrectAnswer(question, answer),
       attemptedAt: new Date().toISOString(),
       sessionId,
       correctAnswer: question.correctAnswer,
@@ -247,7 +370,7 @@ export default function App() {
     setResult(null);
     setView(origin);
   }
-  async function chooseAnswer(answer: Answer) {
+  async function chooseAnswer(answer: string) {
     if (!quiz) return;
     const question = quiz.questions[quiz.index];
     if (quiz.answers[question.id] !== undefined || answerLock.current) return;
@@ -625,7 +748,10 @@ export default function App() {
         <StatCard icon={<Target />} label="Accuracy" value={`${stats.accuracy}%`} caption="on attempted questions" tone="orange" />
       </section>
       <section className="section-heading"><div><h2>Choose a section</h2><p>Pick a subject to explore its chapters and practice.</p></div><span className="soft-badge">{examSections.length} sections</span></section>
-      <section className="section-grid">
+      {examQuestionsLoading && <div className="loading-state" role="status"><div className="spinner" /> Loading {activeExam.name} questions from Firebase…</div>}
+      {!!examQuestionsError && <div className="empty-state"><div><CircleHelp size={26} /></div><p>{examQuestionsError}</p><button className="button button-outline" onClick={() => setQuestionLoadRevision((revision) => revision + 1)}>Retry loading</button></div>}
+      {!examQuestionsLoading && !examQuestionsError && ["cat", "cmat", "xat"].includes(activeExam.id) && examQuestions.length === 0 && <EmptyState text={`No ${activeExam.name} questions were found in the Firestore examQuestions collection yet.`} />}
+      {(!["cat", "cmat", "xat"].includes(activeExam.id) || (!examQuestionsLoading && !examQuestionsError && examQuestions.length > 0)) && <section className="section-grid">
         {examSections.map((section, index) => {
           const list = examQuestions.filter((question) => question.sectionId === section.id);
           const done = list.filter((question) => byId.has(question.id)).length;
@@ -639,7 +765,7 @@ export default function App() {
             <div className="section-progress"><span>Section progress</span><b>{progress}%</b></div>
           </button>;
         })}
-      </section>
+      </section>}
       {search.trim() && <section className="search-results-panel">
         <div className="section-heading"><div><h2>Question search</h2><p>Matching questions in {activeExam.name}.</p></div><span className="soft-badge">{examQuestions.filter((question) => question.question.toLowerCase().includes(search.trim().toLowerCase())).length} matches</span></div>
         <div className="status-list">{examQuestions.filter((question) => question.question.toLowerCase().includes(search.trim().toLowerCase())).map((question) => <button className="search-result-row" key={question.id} onClick={() => { setSectionId(question.sectionId); beginQuiz([question], `${activeExam.name} · Search practice`, "practice"); }}><div><b><MathContent text={question.question} /></b><small>{sections.find((item) => item.id === question.sectionId)?.name} · {chapters.find((item) => item.id === question.chapterId)?.name}</small></div><ArrowRight size={16} /></button>)}</div>
@@ -670,13 +796,14 @@ export default function App() {
 
   function renderQuiz() {
     if (result) return <QuizResult result={result} backLabel={result.origin === "practice" ? "Back to chapter" : "Back to exam dashboard"} onAgain={() => beginQuiz(result.questions, result.title, result.origin)} onWrong={() => {
-      const wrongIds = new Set(result.questions.filter((question) => result.answers[question.id] !== null && result.answers[question.id] !== undefined && result.answers[question.id] !== question.correctAnswer).map((question) => question.id));
+      const wrongIds = new Set(result.questions.filter((question) => result.answers[question.id] !== null && result.answers[question.id] !== undefined && !isCorrectAnswer(question, result.answers[question.id] ?? "")).map((question) => question.id));
       beginQuiz(result.questions.filter((question) => wrongIds.has(question.id)), "Review incorrect answers", "wrong");
     }} onDashboard={() => { setResult(null); setView("dashboard"); setSectionId(null); }} onBack={() => { setResult(null); setView("dashboard"); if (result.origin !== "practice") setSectionId(null); }} />;
     if (!quiz) return null;
     const q = quiz.questions[quiz.index];
     const selected = quiz.answers[q.id];
     const answered = selected !== undefined && selected !== null;
+    const answeredCorrectly = answered && isCorrectAnswer(q, selected ?? "");
     const countDone = Object.keys(quiz.answers).length;
     const section = sections.find((item) => item.id === q.sectionId);
     return <div className="quiz-layout">
@@ -685,7 +812,11 @@ export default function App() {
       <article className="question-card">
         <div className="question-meta"><span className="soft-badge">{activeExam?.name ?? exams.find((exam) => exam.id === q.examId)?.name} · {section?.name}</span><span className={`difficulty difficulty-${q.difficulty.toLowerCase()}`}>{q.difficulty}</span></div>
         <p className="question-number">Question {quiz.index + 1}</p><h2><MathContent text={q.question} /></h2>
-        <div className="answer-list">{answerOptions.map((key) => {
+        {q.answerMode === "text" ? <div className="text-answer-entry">
+          <label htmlFor="typed-answer">Your answer</label>
+          <div><input id="typed-answer" value={typedAnswer} onChange={(event) => setTypedAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && typedAnswer.trim() && !answered) void chooseAnswer(typedAnswer); }} disabled={answered || savingQuestionId === q.id} placeholder="Type your answer" />
+            {!answered && <button className="button button-primary" disabled={!typedAnswer.trim() || savingQuestionId === q.id} onClick={() => void chooseAnswer(typedAnswer)}>Submit answer <ArrowRight size={16} /></button>}</div>
+        </div> : <div className="answer-list">{answerOptions.map((key) => {
           const isCorrect = key === q.correctAnswer;
           const isSelected = key === selected;
           const stateClass = answered && isCorrect ? "answer-correct" : answered && isSelected ? "answer-wrong" : "";
@@ -695,9 +826,9 @@ export default function App() {
             {answered && isCorrect && <span className="answer-mark">Correct answer</span>}
             {answered && isSelected && !isCorrect && <span className="answer-mark">Your answer</span>}
           </button>;
-        })}</div>
-        {answered && <div className={`feedback ${selected === q.correctAnswer ? "feedback-correct" : "feedback-wrong"}`}>
-          <b>{selected === q.correctAnswer ? "✓  Correct answer!" : "✕  Not quite — that's incorrect."}</b>
+        })}</div>}
+        {answered && <div className={`feedback ${answeredCorrectly ? "feedback-correct" : "feedback-wrong"}`}>
+          <b>{answeredCorrectly ? "✓  Correct answer!" : "✕  Not quite — that's incorrect."}</b>
           <p><strong>Correct answer: {q.correctAnswer}</strong></p>
           {q.explanation && <MathContent className="solution-content" text={q.explanation} />}
         </div>}
@@ -711,9 +842,24 @@ export default function App() {
   }
 
   function renderRandom() {
-    return <RandomSetup exams={exams.filter((exam) => !settings.hiddenExamIds.includes(exam.id))} currentExam={selectedExam ?? exams.find((exam) => !settings.hiddenExamIds.includes(exam.id))?.id ?? ""} sections={sections.filter((section) => !settings.hiddenSectionIds.includes(section.id))} questions={questions} onBack={() => { setSectionId(null); visit("dashboard"); }} onStart={(examId, section, count) => {
+    return <RandomSetup exams={exams.filter((exam) => !settings.hiddenExamIds.includes(exam.id))} currentExam={selectedExam ?? exams.find((exam) => !settings.hiddenExamIds.includes(exam.id))?.id ?? ""} sections={sections.filter((section) => !settings.hiddenSectionIds.includes(section.id))} questions={questions} onBack={() => { setSectionId(null); visit("dashboard"); }} onStart={async (examId, section, count) => {
       setSelectedExam(examId);
-      const available = questions.filter((question) => question.examId === examId && (!section || question.sectionId === section));
+      let questionPool = questions;
+      if (["cat", "cmat", "xat"].includes(examId)) {
+        setExamQuestionsLoading(true);
+        try {
+          const remoteQuestions = await fetchFirestoreExamQuestions(examId, sections, chapters);
+          setQuestions((current) => [...current.filter((question) => question.examId !== examId), ...remoteQuestions]);
+          questionPool = [...questions.filter((question) => question.examId !== examId), ...remoteQuestions];
+          setExamQuestionsError("");
+        } catch (reason) {
+          showError(reason instanceof Error ? reason.message : `Could not load ${examId.toUpperCase()} questions.`);
+          setExamQuestionsLoading(false);
+          return;
+        }
+        setExamQuestionsLoading(false);
+      }
+      const available = questionPool.filter((question) => question.examId === examId && (!section || question.sectionId === section));
       const shuffled = [...available];
       for (let i = shuffled.length - 1; i > 0; i -= 1) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -1406,16 +1552,17 @@ function RandomSetup({ exams, currentExam, sections, questions, onBack, onStart 
   const examSections = sections.filter((item) => item.examId === examId);
   const questionCount = questions.filter((question) => question.examId === examId).length;
   const selectionCount = questions.filter((question) => question.examId === examId && (!section || question.sectionId === section)).length;
+  const firestoreExam = ["cat", "cmat", "xat"].includes(examId);
   const selectionAvailable = Math.min(count, selectionCount);
   return <div className="random-page">
     <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to exam dashboard</button>
     <section className="random-intro"><div className="random-illustration"><div className="random-ring" /><div className="random-icon"><Shuffle size={39} /></div><span>✦</span></div><span className="eyebrow">MIX IT UP</span><h1>Build a random quiz</h1><p>Sharpen your skills with a fresh mix of questions from your question bank.</p></section>
-    <div className="random-setup-card"><div className="setup-header"><div><span className="step-number">01</span><h2>Customize your session</h2></div><span className="soft-badge">{questionCount} available</span></div>
+    <div className="random-setup-card"><div className="setup-header"><div><span className="step-number">01</span><h2>Customize your session</h2></div><span className="soft-badge">{questionCount ? `${questionCount} available` : firestoreExam ? "Loads from Firestore" : "0 available"}</span></div>
       <label className="form-label">Choose an exam <select value={examId} onChange={(event) => { setExamId(event.target.value); setSection(""); }}>{exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name} — {exam.tagline}</option>)}</select></label>
       <label className="form-label">Choose a section <select value={section} onChange={(event) => setSection(event.target.value)}><option value="">Any section</option>{examSections.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
       <div className="form-label">Number of questions <div className="count-options">{[10, 20, 30, 50].map((value) => <button key={value} className={count === value ? "count-selected" : ""} onClick={() => setCount(value)}>{value}</button>)}</div></div>
       <div className="quiz-summary"><div><ClipboardList size={17} /><span>Questions in this quiz</span><b>{selectionAvailable}</b></div><div><Clock3 size={17} /><span>Estimated time</span><b>~{Math.max(1, Math.ceil(selectionAvailable * 1.2))} min</b></div></div>
-      <button className="button button-primary button-full" disabled={!selectionCount} onClick={() => onStart(examId, section, count)}><Shuffle size={16} /> Start random quiz <ArrowRight size={16} /></button>
+      <button className="button button-primary button-full" disabled={!selectionCount && !firestoreExam} onClick={() => onStart(examId, section, count)}><Shuffle size={16} /> Start random quiz <ArrowRight size={16} /></button>
     </div>
   </div>;
 }
@@ -1424,18 +1571,18 @@ function QuizResult({ result, backLabel, onAgain, onWrong, onDashboard, onBack }
   result: QuizState; backLabel: string; onAgain: () => void; onWrong: () => void; onDashboard: () => void; onBack: () => void;
 }) {
   const answered = result.questions.filter((question) => result.answers[question.id] !== undefined && result.answers[question.id] !== null);
-  const correct = answered.filter((question) => result.answers[question.id] === question.correctAnswer).length;
+  const correct = answered.filter((question) => isCorrectAnswer(question, result.answers[question.id] ?? "")).length;
   const wrong = answered.length - correct;
   const missed = result.questions.length - answered.length;
   const accuracy = percent(correct, answered.length);
-  const incorrectQuestions = result.questions.filter((question) => result.answers[question.id] !== null && result.answers[question.id] !== undefined && result.answers[question.id] !== question.correctAnswer);
+  const incorrectQuestions = result.questions.filter((question) => result.answers[question.id] !== null && result.answers[question.id] !== undefined && !isCorrectAnswer(question, result.answers[question.id] ?? ""));
   return <div className="result-page">
     <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> {backLabel}</button>
     <section className="result-hero"><div className="result-medal"><Award size={40} /></div><span className="eyebrow">SESSION COMPLETE</span><h1>Quiz results</h1><p>Nice work showing up for your preparation.</p><div className="score-circle"><div><b>{correct}<small>/{result.questions.length}</small></b><span>SCORE</span></div></div><div className="result-meter"><div><span style={{ width: `${accuracy}%` }} /></div><b>{accuracy}% accuracy</b></div></section>
     <div className="result-stats"><MiniStat label="Total questions" value={result.questions.length} /><MiniStat label="Attempted" value={answered.length} /><MiniStat label="Correct" value={correct} /><MiniStat label="Wrong" value={wrong} /><MiniStat label="Unattempted" value={missed} /><MiniStat label="Percentage" value={`${accuracy}%`} /></div>
     <section className="result-review"><div className="section-heading"><div><h2>Question review</h2><p>See the answer and outcome for every question.</p></div></div>{result.questions.map((question, index) => {
       const answer = result.answers[question.id];
-      const isCorrect = answer === question.correctAnswer;
+      const isCorrect = answer !== null && answer !== undefined && isCorrectAnswer(question, answer);
       return <article className="review-row" key={`${question.id}-${index}`}><span className={`review-status ${answer === undefined || answer === null ? "review-skip" : isCorrect ? "review-good" : "review-bad"}`}>{answer === undefined || answer === null ? "—" : isCorrect ? <Check size={15} /> : <X size={15} />}</span><div><h3><MathContent text={question.question} /></h3><p>{answer === undefined || answer === null ? "Unattempted" : `Your answer: ${answer} · Correct answer: ${question.correctAnswer}`}</p>{question.explanation && <MathContent className="solution-content" text={question.explanation} />}</div><span className="status-pill">{answer === undefined || answer === null ? "Skipped" : isCorrect ? "Correct" : "Wrong"}</span></article>;
     })}</section>
     <div className="result-actions"><button className="button button-primary" onClick={onAgain}><Shuffle size={16} /> Practice again</button>{incorrectQuestions.length > 0 && <button className="button button-outline" onClick={onWrong}><Target size={16} /> Review wrong questions</button>}<button className="button button-quiet" onClick={onDashboard}>Back to exam dashboard</button></div>
@@ -1540,7 +1687,7 @@ function EntityEditor({ type, item, exams, sections, chapters, onClose, onSave, 
   const [options, setOptions] = useState<Record<Answer, string>>(question?.options ?? { A: "", B: "", C: "", D: "" });
   const [liveQuestion, setLiveQuestion] = useState(question?.question ?? "");
   const [liveExplanation, setLiveExplanation] = useState(question?.explanation ?? "");
-  const [answer, setAnswer] = useState<Answer | "">(question?.correctAnswer ?? (question?.hasAnswerKey === false ? "" : "A"));
+  const [answer, setAnswer] = useState(question?.answerMode === "text" ? "A" : question?.correctAnswer ?? (question?.hasAnswerKey === false ? "" : "A"));
   const [difficulty, setDifficulty] = useState<Difficulty>(question?.difficulty ?? "Medium");
   const [subTopic, setSubTopic] = useState(question?.subTopic ?? "");
   const [suggestion, setSuggestion] = useState<QuestionClassification | null>(null);

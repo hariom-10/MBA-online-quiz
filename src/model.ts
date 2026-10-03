@@ -13,7 +13,8 @@ export type Question = {
   subTopic?: string;
   question: string;
   options: Record<Answer, string>;
-  correctAnswer?: Answer;
+  correctAnswer?: string;
+  answerMode?: "choice" | "text";
   hasAnswerKey?: boolean;
   explanation?: string;
   difficulty: Difficulty;
@@ -25,7 +26,7 @@ export type Question = {
 export type Attempt = {
   questionId: string;
   examId: string;
-  selectedAnswer: Answer;
+  selectedAnswer: string;
   isCorrect: boolean;
   attemptedAt: string;
   sessionId: string;
@@ -57,8 +58,8 @@ export type QuestionChange = {
   id: string;
   questionId: string;
   relatedReportId: string;
-  previous: Pick<Question, "question" | "options" | "topic" | "subTopic"> & { correctAnswer: Answer; explanation: string };
-  next: Pick<Question, "question" | "options" | "topic" | "subTopic"> & { correctAnswer: Answer; explanation: string };
+  previous: Pick<Question, "question" | "options" | "topic" | "subTopic"> & { correctAnswer: string; explanation: string };
+  next: Pick<Question, "question" | "options" | "topic" | "subTopic"> & { correctAnswer: string; explanation: string };
   adminUid: string;
   adminName: string;
   changedAt: string;
