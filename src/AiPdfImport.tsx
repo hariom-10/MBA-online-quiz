@@ -51,18 +51,7 @@ function questionToModel(item: AIQuestion, section: Section, chapter: Chapter | 
   };
 }
 
-// ---------------------------------------------------------------------------
-// Detect whether the backend API server is available
-// ---------------------------------------------------------------------------
-async function isServerAvailable(): Promise<boolean> {
-  try {
-    const res = await fetch("/api/auth/session", { method: "GET", credentials: "same-origin" });
-    const ct = res.headers.get("content-type") || "";
-    return ct.includes("application/json");
-  } catch {
-    return false;
-  }
-}
+
 
 // ---------------------------------------------------------------------------
 // Client-side PDF text extraction via pdfjs-dist (Firebase Hosting fallback)
@@ -292,25 +281,30 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     setBusy(true); setError(""); setItems([]); setOcrWarnings([]);
     setProgress({ step: 1, current: 0, total: 1, detected: 0, page: 0, pageCount: 0, label: "Reading PDF", stage: "reading" });
     try {
-      // Try server, fall back to client-side pdfjs extraction
+      // ── Step 1: extract text ────────────────────────────────────────────────
+      // Always try the backend first; if it returns HTML (Firebase Hosting),
+      // fall back transparently to client-side pdfjs-dist extraction.
       let pdfText = "";
       let ocrRequired = false;
-      const serverAvailable = await isServerAvailable();
 
-      if (serverAvailable) {
-        const extracted = await apiWithFallback("/api/pdf/text", file) as { text: string; ocrRequired?: boolean };
-        pdfText = extracted.text;
-        ocrRequired = !!extracted.ocrRequired;
-      } else {
+      const clientExtract = async () => {
         setProgress((current) => ({ ...current, step: 1, stage: "reading", label: "Extracting text from PDF (client-side)..." }));
-        pdfText = await extractPdfTextClientSide(file, (page, total) => {
+        const text = await extractPdfTextClientSide(file, (page, total) => {
           setProgress((current) => ({ ...current, step: 1, stage: "reading", label: `Reading PDF page ${page} / ${total}...`, page, pageCount: total }));
         });
-        // Heuristic: if text is very short relative to file size, it may be scanned
-        const compact = pdfText.replace(/\s/g, "");
+        const compact = text.replace(/\s/g, "");
         const ratio = (compact.match(/[\p{L}\p{N}]/gu) ?? []).length / Math.max(compact.length, 1);
-        ocrRequired = compact.length < 20 || ratio < 0.4;
-      }
+        return { text, ocrRequired: compact.length < 20 || ratio < 0.4 };
+      };
+
+      const extracted = await apiWithFallback(
+        "/api/pdf/text",
+        file,
+        undefined,
+        clientExtract,
+      ) as { text: string; ocrRequired: boolean };
+      pdfText = extracted.text;
+      ocrRequired = !!extracted.ocrRequired;
 
       let lowConfidencePages: number[] = [];
       if (ocrRequired || !pdfText?.trim()) {
@@ -335,14 +329,13 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
       for (let index = 0; index < batches.length; index++) {
         setProgress((current) => ({ ...current, step: 4, stage: "ai", label: "Analyzing questions with AI", current: Math.min(result.length + 1, estimatedTotal), total: estimatedTotal, detected: result.length }));
         try {
-          const response = (serverAvailable
-            ? await apiWithFallback(
-                "/api/pdf/analyze",
-                JSON.stringify({ text: batches[index], catalog, batchNumber: index + 1, ocrSource: pdfText.includes("OCR confidence") }),
-                "application/json",
-                () => analyzeClientSide({ text: batches[index], catalog, batchNumber: index + 1 }),
-              )
-            : await analyzeClientSide({ text: batches[index], catalog, batchNumber: index + 1 })
+          // Always try server first; fall back to direct Gemini API call if the
+          // server is unavailable (Firebase Hosting returns HTML for /api/* paths).
+          const response = await apiWithFallback(
+            "/api/pdf/analyze",
+            JSON.stringify({ text: batches[index], catalog, batchNumber: index + 1, ocrSource: lowConfidencePages.length > 0 }),
+            "application/json",
+            () => analyzeClientSide({ text: batches[index], catalog, batchNumber: index + 1 }),
           ) as { questions: AIQuestion[] };
           for (const value of response.questions) {
             const analyzed = lowConfidencePages.length ? { ...value, confidence: "Low" as const, confidenceReason: `OCR quality was low on page${lowConfidencePages.length === 1 ? "" : "s"} ${lowConfidencePages.join(", ")}; verify the text and answer. ${value.confidenceReason}` } : value;
@@ -376,15 +369,12 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     if (!entry.batchText) return;
     setBusy(true); setError("");
     try {
-      const serverAvailable = await isServerAvailable();
-      const response = (serverAvailable
-        ? await apiWithFallback(
-            "/api/pdf/analyze",
-            JSON.stringify({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
-            "application/json",
-            () => analyzeClientSide({ text: entry.batchText!, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
-          )
-        : await analyzeClientSide({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" })
+      // Try server; if Firebase Hosting returns HTML, fall back to client-side Gemini
+      const response = await apiWithFallback(
+        "/api/pdf/analyze",
+        JSON.stringify({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
+        "application/json",
+        () => analyzeClientSide({ text: entry.batchText!, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
       ) as { questions: AIQuestion[] };
       const retryItems: ReviewItem[] = response.questions.map((value) => {
         const section = sections.find((candidate) => candidate.examId === value.examId && candidate.name.toLowerCase() === value.section.toLowerCase());
