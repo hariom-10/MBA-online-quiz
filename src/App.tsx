@@ -16,7 +16,7 @@ import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "fire
 import {
   clearLocalSession, createLocalStudent, deleteLocalStudent, loginLocalAccount, logoutAdminSession, readLocalAttemptEvents,
   readLocalStudents, recordLocalAttempt, resetLocalStudentPassword, restoreLocalSession as restoreAccountSession,
-  setLocalStudentDisabled, updateLocalStudent, verifyAdminSession,
+  setLocalStudentDisabled, syncFirebaseStudents, updateLocalStudent, verifyAdminSession,
 } from "./localAuth";
 import type { Answer, Attempt, Chapter, Difficulty, Exam, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, UserProfile } from "./model";
 
@@ -253,14 +253,13 @@ export default function App() {
 
   useEffect(() => {
     setQuestions((current) => current.filter((question) => !question.id.startsWith("firestore-")));
-    if (!selectedExam || !["cat", "cmat", "xat"].includes(selectedExam)) {
+    if (!selectedExam) {
       setExamQuestionsLoading(false);
       setExamQuestionsError("");
       return;
     }
     if (!isFirebaseConfigured || !firestore) {
       setExamQuestionsLoading(false);
-      setExamQuestionsError("Firebase is not configured yet. Add your Firebase Web App values to .env.local and restart the app.");
       return;
     }
 
@@ -291,7 +290,7 @@ export default function App() {
     }, (reason) => {
       console.error(`Firestore question listener failed for ${examCode}:`, reason);
       setExamQuestionsLoading(false);
-      setExamQuestionsError(`Could not load ${examCode} questions. Check your Firebase configuration, Firestore rules, and internet connection, then try again.`);
+      setExamQuestionsError(`Could not load ${examCode} questions. Check your Firebase configuration and Firestore rules.`);
     });
   }, [selectedExam, sections, chapters, questionLoadRevision]);
 
@@ -311,6 +310,9 @@ export default function App() {
     }
     setAdminAttempts(readLocalAttemptEvents() as (Attempt & { userId: string })[]);
     setUserProfiles(readLocalStudents());
+    syncFirebaseStudents().then((synced) => {
+      setUserProfiles(synced);
+    }).catch(() => {});
   }, [isAdmin]);
 
   function openExam(id: string) {
@@ -433,6 +435,7 @@ export default function App() {
       if (type === "question") {
         const previous = relatedReportId ? questions.find((entry) => entry.id === value.id) : undefined;
         const question = await persistClassifiedQuestion(value as Question, [...chapters]);
+        await saveApprovedQuestionToFirestore(question);
         setQuestions((current) => [...current.filter((entry) => entry.id !== question.id), question]);
         if (previous && relatedReportId) {
           const history = readLocal<QuestionChange[]>("mba-question-change-history", []);
@@ -514,14 +517,11 @@ export default function App() {
     window.setTimeout(() => setToast(""), 2500);
   }
   async function saveApprovedQuestionToFirestore(question: Question) {
-    if (!["cat", "cmat", "xat"].includes(question.examId)) return;
-    if (!isFirebaseConfigured || !firestore) {
-      throw new Error("Firebase is not configured. Add the existing Firebase Web App values to .env.local and restart the app.");
-    }
+    if (!isFirebaseConfigured || !firestore) return;
     const section = sections.find((entry) => entry.id === question.sectionId);
-    if (!section) throw new Error("Choose a valid section before approving this question.");
     const options = question.options;
-    await setDoc(doc(firestore, "examQuestions", question.id), {
+    const cleanId = question.id.startsWith("firestore-") ? question.id.replace("firestore-", "") : question.id;
+    await setDoc(doc(firestore, "examQuestions", cleanId), {
       exam: question.examId.toUpperCase(),
       question: question.question,
       optionA: options.A ?? "",
@@ -529,9 +529,12 @@ export default function App() {
       optionC: options.C ?? "",
       optionD: options.D ?? "",
       answer: question.correctAnswer ?? "",
-      category: section.name,
+      category: section?.name ?? question.topic ?? "",
       explanation: question.explanation ?? "",
-    });
+      difficulty: question.difficulty ?? "Medium",
+      questionType: question.questionType ?? "MCQ",
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
   }
   async function submitQuestionReport(question: Question, reason: string, studentExplanation: string, evidence?: File) {
     if (!profile || profile.role !== "student") throw new Error("Sign in with a student account to report a question.");
@@ -1565,29 +1568,74 @@ function StudentAccountModal({ student, mode, onClose, onSave }: {
 function SettingsPanel({ settings, exams, sections, onSave }: {
   settings: SiteSettings; exams: Exam[]; sections: Section[]; onSave: (settings: SiteSettings) => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"general" | "api-keys">("general");
   const [draft, setDraft] = useState(settings);
   useEffect(() => setDraft(settings), [settings]);
   const toggle = (key: "hiddenExamIds" | "hiddenSectionIds", id: string) => setDraft((current) => ({
     ...current,
     [key]: current[key].includes(id) ? current[key].filter((item) => item !== id) : [...current[key], id],
   }));
-  return <form className="page-stack settings-page" onSubmit={(event) => { event.preventDefault(); onSave(draft); }}>
-    <section className="section-heading page-title"><div><span className="eyebrow"><Settings size={14} /> ADMIN SETTINGS</span><h1>Customize website</h1><p>Safe display and visibility settings. Question data and navigation remain unchanged.</p></div><button className="button button-primary" type="submit">Save settings</button></section>
-    <section className="settings-card"><h2>Brand and welcome</h2><p>These choices only affect the presentation shown to students.</p>
-      <Field label="Website name" name="siteTitle" value={draft.title} onChange={(title) => setDraft({ ...draft, title: title.slice(0, 60) })} required />
-      <label className="form-label">Welcome message<textarea rows={3} maxLength={240} value={draft.welcomeMessage} onChange={(event) => setDraft({ ...draft, welcomeMessage: event.target.value })} /></label>
-      <Field label="Logo image URL (HTTPS)" name="logoUrl" value={draft.logoUrl} placeholder="https://example.com/logo.png" onChange={(logoUrl) => setDraft({ ...draft, logoUrl })} />
-      {draft.logoUrl && <img className="settings-logo-preview" src={draft.logoUrl} alt="Logo preview" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
-      <label className="form-label">Theme color<select value={draft.theme} onChange={(event) => setDraft({ ...draft, theme: event.target.value as SiteSettings["theme"] })}>{["violet", "blue", "green", "orange"].map((theme) => <option key={theme}>{theme}</option>)}</select></label>
+
+  return <div className="page-stack settings-page">
+    <section className="section-heading page-title">
+      <div>
+        <span className="eyebrow"><Settings size={14} /> ADMIN SETTINGS</span>
+        <h1>Customize Website &amp; AI Keys</h1>
+        <p>Manage general website settings, AI providers, and encrypted API keys.</p>
+      </div>
+      {activeTab === "general" && (
+        <button className="button button-primary" type="button" onClick={() => onSave(draft)}>
+          Save settings
+        </button>
+      )}
     </section>
-    <section className="settings-card"><h2>Exam visibility</h2><p>Hidden exams remain stored and editable by the admin; they are simply removed from the student exam picker.</p>
-      <div className="visibility-list">{exams.map((exam) => <label key={exam.id}><input type="checkbox" checked={!draft.hiddenExamIds.includes(exam.id)} onChange={() => toggle("hiddenExamIds", exam.id)} /><span><b>{exam.name}</b><small>{exam.tagline}</small></span><span className={`visibility-tag ${draft.hiddenExamIds.includes(exam.id) ? "visibility-hidden" : ""}`}>{draft.hiddenExamIds.includes(exam.id) ? "Hidden" : "Visible"}</span></label>)}</div>
-    </section>
-    <section className="settings-card"><h2>Subject / section visibility</h2><p>Hide a section from student navigation without deleting its chapters, questions or progress.</p>
-      <div className="visibility-list">{sections.map((section) => <label key={section.id}><input type="checkbox" checked={!draft.hiddenSectionIds.includes(section.id)} onChange={() => toggle("hiddenSectionIds", section.id)} /><span><b>{section.name}</b><small>{exams.find((exam) => exam.id === section.examId)?.name}</small></span><span className={`visibility-tag ${draft.hiddenSectionIds.includes(section.id) ? "visibility-hidden" : ""}`}>{draft.hiddenSectionIds.includes(section.id) ? "Hidden" : "Visible"}</span></label>)}</div>
-    </section>
-    <button className="button button-primary settings-save-bottom" type="submit">Save settings</button>
-  </form>;
+
+    <div className="settings-tabs-bar">
+      <button
+        type="button"
+        className={`settings-tab-btn ${activeTab === "general" ? "tab-active" : ""}`}
+        onClick={() => setActiveTab("general")}
+      >
+        <Settings size={16} /> General &amp; Visibility
+      </button>
+      <button
+        type="button"
+        className={`settings-tab-btn ${activeTab === "api-keys" ? "tab-active" : ""}`}
+        onClick={() => setActiveTab("api-keys")}
+      >
+        <Key size={16} /> AI Providers &amp; Encrypted API Keys
+      </button>
+    </div>
+
+    {activeTab === "general" ? (
+      <form className="settings-content-stack" onSubmit={(event) => { event.preventDefault(); onSave(draft); }}>
+        <section className="settings-card">
+          <h2>Brand and welcome</h2>
+          <p>These choices only affect the presentation shown to students.</p>
+          <Field label="Website name" name="siteTitle" value={draft.title} onChange={(title) => setDraft({ ...draft, title: title.slice(0, 60) })} required />
+          <label className="form-label">Welcome message<textarea rows={3} maxLength={240} value={draft.welcomeMessage} onChange={(event) => setDraft({ ...draft, welcomeMessage: event.target.value })} /></label>
+          <Field label="Logo image URL (HTTPS)" name="logoUrl" value={draft.logoUrl} placeholder="https://example.com/logo.png" onChange={(logoUrl) => setDraft({ ...draft, logoUrl })} />
+          {draft.logoUrl && <img className="settings-logo-preview" src={draft.logoUrl} alt="Logo preview" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+          <label className="form-label">Theme color<select value={draft.theme} onChange={(event) => setDraft({ ...draft, theme: event.target.value as SiteSettings["theme"] })}>{["violet", "blue", "green", "orange"].map((theme) => <option key={theme}>{theme}</option>)}</select></label>
+        </section>
+        <section className="settings-card">
+          <h2>Exam visibility</h2>
+          <p>Hidden exams remain stored and editable by the admin; they are simply removed from the student exam picker.</p>
+          <div className="visibility-list">{exams.map((exam) => <label key={exam.id}><input type="checkbox" checked={!draft.hiddenExamIds.includes(exam.id)} onChange={() => toggle("hiddenExamIds", exam.id)} /><span><b>{exam.name}</b><small>{exam.tagline}</small></span><span className={`visibility-tag ${draft.hiddenExamIds.includes(exam.id) ? "visibility-hidden" : ""}`}>{draft.hiddenExamIds.includes(exam.id) ? "Hidden" : "Visible"}</span></label>)}</div>
+        </section>
+        <section className="settings-card">
+          <h2>Subject / section visibility</h2>
+          <p>Hide a section from student navigation without deleting its chapters, questions or progress.</p>
+          <div className="visibility-list">{sections.map((section) => <label key={section.id}><input type="checkbox" checked={!draft.hiddenSectionIds.includes(section.id)} onChange={() => toggle("hiddenSectionIds", section.id)} /><span><b>{section.name}</b><small>{exams.find((exam) => exam.id === section.examId)?.name}</small></span><span className={`visibility-tag ${draft.hiddenSectionIds.includes(section.id) ? "visibility-hidden" : ""}`}>{draft.hiddenSectionIds.includes(section.id) ? "Hidden" : "Visible"}</span></label>)}</div>
+        </section>
+        <button className="button button-primary settings-save-bottom" type="submit">Save settings</button>
+      </form>
+    ) : (
+      <div className="settings-content-stack">
+        <ApiKeyManager />
+      </div>
+    )}
+  </div>;
 }
 
 function EmptyState({ text, icon }: { text: string; icon?: ReactNode }) {

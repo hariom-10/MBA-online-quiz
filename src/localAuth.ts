@@ -1,4 +1,6 @@
 import type { StudentAccountInput, UserProfile } from "./model";
+import { firestore } from "./firebase";
+import { collection, doc, setDoc, getDocs, query, where, deleteDoc } from "firebase/firestore";
 
 type LocalStudent = UserProfile & {
   role: "student";
@@ -101,8 +103,8 @@ function newSalt(): string {
 
 function cleanStudentId(studentId: string): { id: string; key: string } {
   const id = studentId.trim();
-  if (!/^[a-z0-9_-]{3,32}$/i.test(id)) {
-    throw new Error("Student IDs must be 3–32 letters, numbers, underscores or hyphens.");
+  if (!/^[a-z0-9_.-]{3,64}$/i.test(id)) {
+    throw new Error("Student IDs or Emails must be 3–64 characters long.");
   }
   return { id, key: id.toLowerCase() };
 }
@@ -150,7 +152,6 @@ export async function loginLocalAccount(studentId: string, password: string, kin
       if (err instanceof Error && err.message === "Admin ID or password is incorrect.") {
         throw err;
       }
-      /* on static hosting (e.g. Firebase), API route returns HTML, gracefully fall back */
     }
 
     if (serverOk && serverProfile) {
@@ -183,12 +184,40 @@ export async function loginLocalAccount(studentId: string, password: string, kin
     return profile;
   }
 
-  const account = readStudents().find((student) => student.studentId.toLowerCase() === key);
-  if (!account || account.status === "disabled" || await derive(password, account.passwordSalt) !== account.passwordHash) {
+  // Look up student in local storage or Firebase Firestore
+  let account = readStudents().find((s) => s.studentId.toLowerCase() === key || s.email.toLowerCase() === key);
+
+  if (!account && firestore) {
+    try {
+      const q1 = query(collection(firestore, "students"), where("studentId", "==", key));
+      const snap1 = await getDocs(q1);
+      if (!snap1.empty) {
+        account = snap1.docs[0].data() as LocalStudent;
+      } else {
+        const q2 = query(collection(firestore, "students"), where("email", "==", key));
+        const snap2 = await getDocs(q2);
+        if (!snap2.empty) account = snap2.docs[0].data() as LocalStudent;
+      }
+    } catch (err) {
+      console.warn("Firebase Firestore student lookup failed:", err);
+    }
+  }
+
+  if (!account || account.status === "disabled" || (await derive(password, account.passwordSalt)) !== account.passwordHash) {
     throw new Error("Student ID or password is incorrect.");
   }
-  const updated = { ...account, lastLogin: new Date().toISOString() };
-  saveStudents(readStudents().map((student) => student.uid === updated.uid ? updated : student));
+
+  const updated: LocalStudent = { ...account, lastLogin: new Date().toISOString() };
+  const allStudents = readStudents();
+  const nextList = allStudents.some((s) => s.uid === updated.uid)
+    ? allStudents.map((s) => (s.uid === updated.uid ? updated : s))
+    : [...allStudents, updated];
+  saveStudents(nextList);
+
+  if (firestore) {
+    setDoc(doc(firestore, "students", updated.uid), updated, { merge: true }).catch(() => {});
+  }
+
   const profile = publicProfile(updated);
   saveLocalSession(profile);
   return profile;
@@ -197,12 +226,24 @@ export async function loginLocalAccount(studentId: string, password: string, kin
 export async function createLocalStudent(input: StudentAccountInput): Promise<UserProfile> {
   const fields = validateInput(input, true);
   const students = readStudents();
-  if (students.some((student) => student.studentId.toLowerCase() === fields.key)) {
-    throw new Error("That Student ID is already in use.");
+  if (students.some((student) => student.studentId.toLowerCase() === fields.key || (fields.email && student.email.toLowerCase() === fields.email.toLowerCase()))) {
+    throw new Error("That Student ID or Email address is already registered.");
   }
+
+  // Check Firestore for duplicates as well
+  if (firestore) {
+    try {
+      const q = query(collection(firestore, "students"), where("studentId", "==", fields.id));
+      const snap = await getDocs(q);
+      if (!snap.empty) throw new Error("That Student ID is already registered in Firebase.");
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("already registered")) throw err;
+    }
+  }
+
   const passwordSalt = newSalt();
   const created: LocalStudent = {
-    uid: `local-student-${globalThis.crypto.randomUUID()}`,
+    uid: `student-${globalThis.crypto.randomUUID()}`,
     name: fields.name,
     studentId: fields.id,
     email: fields.email,
@@ -214,7 +255,18 @@ export async function createLocalStudent(input: StudentAccountInput): Promise<Us
     passwordSalt,
     passwordHash: await derive(input.password ?? "", passwordSalt),
   };
+
   saveStudents([...students, created]);
+
+  // Sync to Firebase Firestore
+  if (firestore) {
+    try {
+      await setDoc(doc(firestore, "students", created.uid), created);
+    } catch (err) {
+      console.warn("Could not save student to Firebase Firestore:", err);
+    }
+  }
+
   return publicProfile(created);
 }
 
@@ -237,7 +289,16 @@ export async function updateLocalStudent(uid: string, input: StudentAccountInput
     const passwordSalt = newSalt();
     next = { ...next, passwordSalt, passwordHash: await derive(input.password, passwordSalt) };
   }
-  saveStudents(students.map((student) => student.uid === uid ? next : student));
+  saveStudents(students.map((student) => (student.uid === uid ? next : student)));
+
+  if (firestore) {
+    try {
+      await setDoc(doc(firestore, "students", uid), next, { merge: true });
+    } catch (err) {
+      console.warn("Could not update student on Firebase Firestore:", err);
+    }
+  }
+
   return publicProfile(next);
 }
 
@@ -246,14 +307,26 @@ export async function resetLocalStudentPassword(uid: string, password: string): 
   if (!existing) throw new Error("Student account not found.");
   const passwordSalt = newSalt();
   const updated = { ...existing, passwordSalt, passwordHash: await derive(password, passwordSalt) };
-  saveStudents(readStudents().map((student) => student.uid === uid ? updated : student));
+  saveStudents(readStudents().map((student) => (student.uid === uid ? updated : student)));
+
+  if (firestore) {
+    try {
+      await setDoc(doc(firestore, "students", uid), { passwordSalt, passwordHash: updated.passwordHash }, { merge: true });
+    } catch (err) {
+      console.warn("Could not update password on Firebase Firestore:", err);
+    }
+  }
 }
 
 export function setLocalStudentDisabled(uid: string, disabled: boolean): void {
   const students = readStudents();
   if (!students.some((student) => student.uid === uid)) throw new Error("Student account not found.");
-  saveStudents(students.map((student) => student.uid === uid ? { ...student, status: disabled ? "disabled" : "active" } : student));
+  saveStudents(students.map((student) => (student.uid === uid ? { ...student, status: disabled ? "disabled" : "active" } : student)));
   if (disabled && read<UserProfile | null>(SESSION_KEY, null)?.uid === uid) saveLocalSession(null);
+
+  if (firestore) {
+    setDoc(doc(firestore, "students", uid), { status: disabled ? "disabled" : "active" }, { merge: true }).catch(() => {});
+  }
 }
 
 export function deleteLocalStudent(uid: string): void {
@@ -265,10 +338,31 @@ export function deleteLocalStudent(uid: string): void {
   const reports = read<Array<{ studentUid: string } & Record<string, unknown>>>("mba-question-reports", []);
   localStorage.setItem("mba-question-reports", JSON.stringify(reports.filter((report) => report.studentUid !== uid)));
   if (read<UserProfile | null>(SESSION_KEY, null)?.uid === uid) saveLocalSession(null);
+
+  if (firestore) {
+    deleteDoc(doc(firestore, "students", uid)).catch(() => {});
+  }
 }
 
 export function readLocalStudents(): UserProfile[] {
   return readStudents().map(publicProfile);
+}
+
+export async function syncFirebaseStudents(): Promise<UserProfile[]> {
+  const local = readStudents();
+  if (!firestore) return local.map(publicProfile);
+  try {
+    const snapshot = await getDocs(collection(firestore, "students"));
+    const remote = snapshot.docs.map((d) => d.data() as LocalStudent);
+    const map = new Map<string, LocalStudent>();
+    for (const item of local) map.set(item.uid, item);
+    for (const item of remote) map.set(item.uid, item);
+    const merged = Array.from(map.values());
+    saveStudents(merged);
+    return merged.map(publicProfile);
+  } catch {
+    return local.map(publicProfile);
+  }
 }
 
 export function readLocalAttemptEvents(): Array<Record<string, unknown> & { userId: string }> {
@@ -279,6 +373,11 @@ export function recordLocalAttempt(uid: string, attempt: Record<string, unknown>
   const events = readLocalAttemptEvents();
   events.push({ ...attempt, userId: uid });
   localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+
+  if (firestore) {
+    const attemptId = `attempt-${crypto.randomUUID()}`;
+    setDoc(doc(firestore, "attempts", attemptId), { ...attempt, userId: uid, recordedAt: new Date().toISOString() }).catch(() => {});
+  }
 }
 
 export function clearLocalSession(): void {

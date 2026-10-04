@@ -1048,3 +1048,18 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
   .form-actions-row { flex-direction: column; }
   .btn-cancel-dark, .btn-validate-yellow { width: 100%; justify-content: center; }
 }
+
+/* SETTINGS TABS */
+.settings-tabs-bar { display: flex; gap: 8px; border-bottom: 1px solid #e2e8f0; margin-bottom: 20px; }
+.mode-dark .settings-tabs-bar { border-color: #273046; }
+.settings-tab-btn {
+  display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border: none; border-bottom: 2px solid transparent;
+  background: none; color: #64748b; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s ease;
+}
+.settings-tab-btn:hover { color: #2563eb; }
+.settings-tab-btn.tab-active { color: #2563eb; border-bottom-color: #2563eb; background: rgba(37,99,235,0.04); border-top-left-radius: 8px; border-top-right-radius: 8px; }
+.mode-dark .settings-tab-btn { color: #94a3b8; }
+.mode-dark .settings-tab-btn:hover { color: #60a5fa; }
+.mode-dark .settings-tab-btn.tab-active { color: #60a5fa; border-bottom-color: #60a5fa; background: rgba(96,165,250,0.08); }
+.settings-content-stack { display: flex; flex-direction: column; gap: 20px; }
+

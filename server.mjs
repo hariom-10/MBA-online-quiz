@@ -115,7 +115,7 @@ const questionSchema = {
 async function analyze(body) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("AI service is not configured. Please contact the system administrator.");
-  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
   try {
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({

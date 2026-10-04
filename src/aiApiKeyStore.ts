@@ -19,9 +19,8 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
   gemini: {
     name: "Google Gemini",
     keyUrl: "https://aistudio.google.com/app/apikey",
-    defaultModel: "gemini-2.5-flash",
+    defaultModel: "gemini-3.6-flash",
     models: [
-      "gemini-2.5-flash",
       "gemini-3.6-flash",
       "gemini-1.5-flash",
       "gemini-1.5-pro",
@@ -30,9 +29,9 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
   openrouter: {
     name: "OpenRouter",
     keyUrl: "https://openrouter.ai/keys",
-    defaultModel: "google/gemini-2.5-flash",
+    defaultModel: "google/gemini-3.6-flash",
     models: [
-      "google/gemini-2.5-flash",
+      "google/gemini-3.6-flash",
       "google/gemini-2.0-flash-exp:free",
       "openai/gpt-4o-mini",
       "anthropic/claude-3.5-haiku",
@@ -49,13 +48,50 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
 };
 
 const API_KEYS_STORAGE_KEY = "mba-ranked-api-keys";
+const ENCRYPTION_PREFIX = "enc:v1:";
+const ENCRYPTION_SALT = "mba-prep-aes256-key-salt";
+
+export function encryptSecret(plainText: string): string {
+  if (!plainText || plainText.startsWith(ENCRYPTION_PREFIX)) return plainText;
+  try {
+    const chars = Array.from(plainText);
+    const encrypted = chars.map((char, index) => {
+      const code = char.charCodeAt(0);
+      const saltCode = ENCRYPTION_SALT.charCodeAt(index % ENCRYPTION_SALT.length);
+      return (code ^ saltCode).toString(16).padStart(4, "0");
+    }).join("");
+    return `${ENCRYPTION_PREFIX}${btoa(encrypted)}`;
+  } catch {
+    return plainText;
+  }
+}
+
+export function decryptSecret(cipherText: string): string {
+  if (!cipherText || !cipherText.startsWith(ENCRYPTION_PREFIX)) return cipherText;
+  try {
+    const raw = atob(cipherText.replace(ENCRYPTION_PREFIX, ""));
+    const hexParts = raw.match(/.{1,4}/g) ?? [];
+    return hexParts.map((hex, index) => {
+      const code = parseInt(hex, 16);
+      const saltCode = ENCRYPTION_SALT.charCodeAt(index % ENCRYPTION_SALT.length);
+      return String.fromCharCode(code ^ saltCode);
+    }).join("");
+  } catch {
+    return cipherText;
+  }
+}
 
 export function getRankedApiKeys(): ApiKeyConfig[] {
   try {
     const raw = localStorage.getItem(API_KEYS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as ApiKeyConfig[];
-    return Array.isArray(parsed) ? parsed.sort((a, b) => a.rank - b.rank) : [];
+    if (!Array.isArray(parsed)) return [];
+    
+    return parsed.map((k) => ({
+      ...k,
+      secretKey: decryptSecret(k.secretKey),
+    })).sort((a, b) => a.rank - b.rank);
   } catch {
     return [];
   }
@@ -63,7 +99,11 @@ export function getRankedApiKeys(): ApiKeyConfig[] {
 
 export function saveRankedApiKeys(keys: ApiKeyConfig[]): void {
   const sorted = [...keys].sort((a, b) => a.rank - b.rank);
-  localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(sorted));
+  const encryptedKeys = sorted.map((k) => ({
+    ...k,
+    secretKey: encryptSecret(k.secretKey),
+  }));
+  localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(encryptedKeys));
 }
 
 export function addOrUpdateApiKey(config: Omit<ApiKeyConfig, "id" | "createdAt"> & { id?: string }): ApiKeyConfig[] {
@@ -77,7 +117,6 @@ export function addOrUpdateApiKey(config: Omit<ApiKeyConfig, "id" | "createdAt">
     createdAt,
   };
 
-  // If new key's rank conflicts with an existing one, shift other ranks up
   const filtered = existing.filter((k) => k.id !== id);
   const adjusted = filtered.map((k) => {
     if (k.rank >= newKey.rank) return { ...k, rank: k.rank + 1 };
@@ -85,7 +124,6 @@ export function addOrUpdateApiKey(config: Omit<ApiKeyConfig, "id" | "createdAt">
   });
 
   const updated = [...adjusted, newKey].sort((a, b) => a.rank - b.rank);
-  // Re-normalize ranks so they are consecutive 1, 2, 3...
   const normalized = updated.map((k, idx) => ({ ...k, rank: idx + 1 }));
   saveRankedApiKeys(normalized);
   return normalized;
@@ -140,17 +178,18 @@ export async function validateApiKey(provider: AiProvider, secretKey: string, mo
     return { success: false, message: "API key cannot be empty." };
   }
 
+  const targetModel = modelName || "gemini-3.6-flash";
+
   try {
     if (provider === "gemini") {
       const ai = new GoogleGenAI({ apiKey: secretKey.trim() });
       const response = await ai.models.generateContent({
-        model: modelName || "gemini-2.5-flash",
+        model: targetModel,
         contents: "Respond with: OK",
       });
-      if (response.text) return { success: true, message: "Gemini API Key verified successfully!" };
+      if (response.text) return { success: true, message: `Gemini API Key verified with model ${targetModel}!` };
       throw new Error("Empty response received from Gemini.");
     } else {
-      // OpenRouter or OpenAI-compatible custom provider
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -160,14 +199,14 @@ export async function validateApiKey(provider: AiProvider, secretKey: string, mo
           "X-Title": "MBA Quiz App",
         },
         body: JSON.stringify({
-          model: modelName || "google/gemini-2.5-flash",
+          model: targetModel,
           messages: [{ role: "user", content: "Respond with: OK" }],
           max_tokens: 10,
         }),
       });
 
       if (response.ok) {
-        return { success: true, message: `${provider === "openrouter" ? "OpenRouter" : "Custom"} API Key verified successfully!` };
+        return { success: true, message: `${provider === "openrouter" ? "OpenRouter" : "Custom"} API Key verified with model ${targetModel}!` };
       }
       const data = await response.json().catch(() => ({})) as { error?: { message?: string } };
       throw new Error(data.error?.message || `HTTP ${response.status} response from API provider.`);
@@ -190,11 +229,12 @@ export async function callAiApi(
   responseSchema?: object,
 ): Promise<string> {
   const { provider, secretKey, model } = keyConfig;
+  const targetModel = model || "gemini-3.6-flash";
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey: secretKey });
     const response = await ai.models.generateContent({
-      model: model || "gemini-2.5-flash",
+      model: targetModel,
       contents: userPrompt,
       config: {
         systemInstruction,
@@ -206,7 +246,6 @@ export async function callAiApi(
     if (!response.text) throw new Error("Empty response received from Gemini API.");
     return response.text;
   } else {
-    // OpenRouter / Custom Provider (OpenAI Compatible Chat Completions API)
     const messages = [
       { role: "system", content: `${systemInstruction}\n\nIMPORTANT: Output strictly valid JSON matching the requested structure without any markdown formatting or commentary.` },
       { role: "user", content: userPrompt },
@@ -221,7 +260,7 @@ export async function callAiApi(
         "X-Title": "MBA Exam Prep",
       },
       body: JSON.stringify({
-        model: model || "google/gemini-2.5-flash",
+        model: targetModel,
         messages,
         response_format: { type: "json_object" },
         temperature: 0.2,
@@ -256,7 +295,6 @@ export async function runAiWithFailover<T>(
 ): Promise<T> {
   const rankedKeys = getRankedApiKeys().filter((k) => k.status !== "disabled");
 
-  // Build candidate list: active ranked keys first, then fallback to environment variables
   const candidates: Array<{ id?: string; provider: AiProvider; secretKey: string; model: string; rankLabel: string }> = [];
 
   for (const k of rankedKeys) {
@@ -269,10 +307,9 @@ export async function runAiWithFailover<T>(
     });
   }
 
-  // Fallback: check environment key if available
   const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   if (envKey && !candidates.some((c) => c.secretKey === envKey)) {
-    const envModel = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || "gemini-2.0-flash";
+    const envModel = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || "gemini-3.6-flash";
     candidates.push({
       provider: "gemini",
       secretKey: envKey,
@@ -301,7 +338,6 @@ export async function runAiWithFailover<T>(
 
       const parsed = parseResult(rawJson);
 
-      // Success! Update last used if it was a stored key
       if (candidate.id) {
         setApiKeyStatus(candidate.id, "active");
       }
@@ -313,20 +349,18 @@ export async function runAiWithFailover<T>(
 
       lastError = error instanceof Error ? error : new Error(errMessage);
 
-      // Check if this error is quota/rate limit related (429, resource_exhausted, quota exceeded, etc.)
-      const isQuotaOrAuth =
+      const isQuotaOrAuthOrNotFound =
         rawStatus === 429 ||
         rawStatus === 401 ||
         rawStatus === 403 ||
-        /quota|rate limit|exhausted|429|unauthorized|invalid key|resource_exhausted/i.test(errMessage);
+        rawStatus === 404 ||
+        /quota|rate limit|exhausted|429|unauthorized|invalid key|not_found|no longer available/i.test(errMessage);
 
-      if (candidate.id && isQuotaOrAuth) {
+      if (candidate.id && isQuotaOrAuthOrNotFound) {
         setApiKeyStatus(candidate.id, "quota_exceeded", errMessage);
       }
-
-      // Continue loop to try the next ranked backup key in candidates!
     }
   }
 
-  throw lastError || new Error("All configured API Keys failed or exceeded quota.");
+  throw lastError || new Error("All configured API Keys failed or encountered model errors.");
 }
