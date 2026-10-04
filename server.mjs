@@ -115,7 +115,10 @@ const questionSchema = {
 async function analyze(body) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("AI service is not configured. Please contact the system administrator.");
-  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+  let model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  if (!model || model.includes("3.6") || model.includes("3.8") || model.includes("flash-medium")) {
+    model = "gemini-2.5-flash";
+  }
   try {
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
@@ -143,7 +146,7 @@ async function analyze(body) {
   }
 }
 
-async function handleApi(req, res) {
+export async function handleApi(req, res) {
   const pathname = new URL(req.url, "http://localhost").pathname;
   if (!pathname.startsWith("/api/")) return false;
   if (req.method === "GET" && pathname === "/api/auth/session") {

@@ -19,19 +19,20 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
   gemini: {
     name: "Google Gemini",
     keyUrl: "https://aistudio.google.com/app/apikey",
-    defaultModel: "gemini-3.6-flash",
+    defaultModel: "gemini-2.5-flash",
     models: [
-      "gemini-3.6-flash",
+      "gemini-2.5-flash",
       "gemini-1.5-flash",
       "gemini-1.5-pro",
+      "gemini-2.0-flash",
     ],
   },
   openrouter: {
     name: "OpenRouter",
     keyUrl: "https://openrouter.ai/keys",
-    defaultModel: "google/gemini-3.6-flash",
+    defaultModel: "google/gemini-2.5-flash",
     models: [
-      "google/gemini-3.6-flash",
+      "google/gemini-2.5-flash",
       "google/gemini-2.0-flash-exp:free",
       "openai/gpt-4o-mini",
       "anthropic/claude-3.5-haiku",
@@ -46,6 +47,15 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
     models: ["custom-model"],
   },
 };
+
+export function normalizeModelName(model: string | undefined, provider: AiProvider): string {
+  if (!model) return provider === "openrouter" ? "google/gemini-2.5-flash" : "gemini-2.5-flash";
+  const m = model.trim();
+  if (m.includes("3.6") || m.includes("3.8") || m.includes("flash-medium")) {
+    return provider === "openrouter" ? "google/gemini-2.5-flash" : "gemini-2.5-flash";
+  }
+  return m;
+}
 
 const API_KEYS_STORAGE_KEY = "mba-ranked-api-keys";
 const ENCRYPTION_PREFIX = "enc:v1:";
@@ -90,6 +100,7 @@ export function getRankedApiKeys(): ApiKeyConfig[] {
     
     return parsed.map((k) => ({
       ...k,
+      model: normalizeModelName(k.model, k.provider),
       secretKey: decryptSecret(k.secretKey),
     })).sort((a, b) => a.rank - b.rank);
   } catch {
@@ -101,6 +112,7 @@ export function saveRankedApiKeys(keys: ApiKeyConfig[]): void {
   const sorted = [...keys].sort((a, b) => a.rank - b.rank);
   const encryptedKeys = sorted.map((k) => ({
     ...k,
+    model: normalizeModelName(k.model, k.provider),
     secretKey: encryptSecret(k.secretKey),
   }));
   localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(encryptedKeys));
@@ -113,6 +125,7 @@ export function addOrUpdateApiKey(config: Omit<ApiKeyConfig, "id" | "createdAt">
 
   const newKey: ApiKeyConfig = {
     ...config,
+    model: normalizeModelName(config.model, config.provider),
     id,
     createdAt,
   };
@@ -178,7 +191,7 @@ export async function validateApiKey(provider: AiProvider, secretKey: string, mo
     return { success: false, message: "API key cannot be empty." };
   }
 
-  const targetModel = modelName || "gemini-3.6-flash";
+  const targetModel = normalizeModelName(modelName, provider);
 
   try {
     if (provider === "gemini") {
@@ -229,7 +242,7 @@ export async function callAiApi(
   responseSchema?: object,
 ): Promise<string> {
   const { provider, secretKey, model } = keyConfig;
-  const targetModel = model || "gemini-3.6-flash";
+  const targetModel = normalizeModelName(model, provider);
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey: secretKey });
@@ -298,18 +311,19 @@ export async function runAiWithFailover<T>(
   const candidates: Array<{ id?: string; provider: AiProvider; secretKey: string; model: string; rankLabel: string }> = [];
 
   for (const k of rankedKeys) {
+    const normModel = normalizeModelName(k.model, k.provider);
     candidates.push({
       id: k.id,
       provider: k.provider,
       secretKey: k.secretKey,
-      model: k.model,
-      rankLabel: `Rank #${k.rank} (${k.providerName} - ${k.model})`,
+      model: normModel,
+      rankLabel: `Rank #${k.rank} (${k.providerName} - ${normModel})`,
     });
   }
 
   const envKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
   if (envKey && !candidates.some((c) => c.secretKey === envKey)) {
-    const envModel = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || "gemini-3.6-flash";
+    const envModel = normalizeModelName(import.meta.env.VITE_GEMINI_MODEL as string | undefined, "gemini");
     candidates.push({
       provider: "gemini",
       secretKey: envKey,
@@ -354,7 +368,8 @@ export async function runAiWithFailover<T>(
         rawStatus === 401 ||
         rawStatus === 403 ||
         rawStatus === 404 ||
-        /quota|rate limit|exhausted|429|unauthorized|invalid key|not_found|no longer available/i.test(errMessage);
+        rawStatus === 503 ||
+        /quota|rate limit|exhausted|429|503|unavailable|capacity|no capacity available|unauthorized|invalid key|not_found|no longer available/i.test(errMessage);
 
       if (candidate.id && isQuotaOrAuthOrNotFound) {
         setApiKeyStatus(candidate.id, "quota_exceeded", errMessage);

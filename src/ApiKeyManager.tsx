@@ -16,7 +16,7 @@ export function ApiKeyManager({ onClosed }: { onClosed?: () => void }) {
   // Form states matching screenshot
   const [rank, setRank] = useState<number>(1);
   const [provider, setProvider] = useState<AiProvider>("gemini");
-  const [model, setModel] = useState<string>("gemini-3.6-flash");
+  const [model, setModel] = useState<string>("gemini-2.5-flash");
   const [customModelInput, setCustomModelInput] = useState<string>("");
   const [secretKey, setSecretKey] = useState<string>("");
   const [showSecret, setShowSecret] = useState<boolean>(false);
