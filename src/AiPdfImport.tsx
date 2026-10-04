@@ -1,6 +1,12 @@
 import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { AlertCircle, Check, FileText, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
 import type { Answer, Chapter, Difficulty, Exam, Question, Section } from "./model";
+import { GoogleGenAI } from "@google/genai";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+// Set the pdf.js worker source for client-side PDF text extraction
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
 type AIQuestion = {
   questionNumber: number | null; question: string; type: string; options: string[]; correctAnswer: string;
@@ -45,6 +51,140 @@ function questionToModel(item: AIQuestion, section: Section, chapter: Chapter | 
   };
 }
 
+// ---------------------------------------------------------------------------
+// Detect whether the backend API server is available
+// ---------------------------------------------------------------------------
+async function isServerAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/session", { method: "GET", credentials: "same-origin" });
+    const ct = res.headers.get("content-type") || "";
+    return ct.includes("application/json");
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client-side PDF text extraction via pdfjs-dist (Firebase Hosting fallback)
+// ---------------------------------------------------------------------------
+async function extractPdfTextClientSide(
+  file: File,
+  onProgress?: (page: number, total: number) => void,
+): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const textParts: string[] = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    onProgress?.(i, pdf.numPages);
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item) => ("str" in item ? item.str : ""))
+      .join(" ")
+      .trim();
+    if (pageText) textParts.push(pageText);
+  }
+  return textParts.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Client-side Gemini AI analysis (Firebase Hosting fallback)
+// ---------------------------------------------------------------------------
+const CLIENT_SYSTEM_INSTRUCTION =
+  "Extract every complete question in the provided text. Return only questions present in the text. " +
+  "Use the provided exam, subject/section and chapter catalog; choose exact existing IDs/names where suitable. " +
+  "If a chapter does not match, put a concise suggested chapter name. Never invent a subject or section. " +
+  "Use examId from the catalog. Preserve source answer key if present; otherwise solve carefully. " +
+  "Generate concise, instructional explanations. For uncertainty use Low/Medium confidence and explain why. " +
+  "Keep each question self-contained and include options exactly. " +
+  "OCR may confuse characters (for example 1O/10, O/0, x/?); normalize only when the intended meaning is clear. " +
+  "Do not guess missing or ambiguous wording; preserve it and set Low confidence with a short review reason.";
+
+const CLIENT_QUESTION_SCHEMA = {
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          questionNumber: { type: "number", nullable: true },
+          question: { type: "string" },
+          type: { type: "string", enum: ["MCQ", "Multiple Correct", "True/False", "Numerical", "Fill in the Blank", "Short Answer", "Long Answer", "Assertion & Reason", "Match the Following", "Other"] },
+          options: { type: "array", items: { type: "string" } },
+          correctAnswer: { type: "string" },
+          explanation: { type: "string" },
+          examId: { type: "string" },
+          subject: { type: "string" },
+          section: { type: "string" },
+          chapter: { type: "string" },
+          topic: { type: "string" },
+          difficulty: { type: "string", enum: ["Easy", "Medium", "Hard"] },
+          tags: { type: "array", items: { type: "string" } },
+          confidence: { type: "string", enum: ["High", "Medium", "Low"] },
+          confidenceReason: { type: "string" },
+        },
+        required: ["questionNumber", "question", "type", "options", "correctAnswer", "explanation", "examId", "subject", "section", "chapter", "topic", "difficulty", "tags", "confidence", "confidenceReason"],
+      },
+    },
+  },
+  required: ["questions"],
+};
+
+async function analyzeClientSide(body: { text: string; catalog: object; batchNumber: number | string }): Promise<{ questions: AIQuestion[] }> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+  if (!apiKey) {
+    throw new Error(
+      "AI PDF analysis requires a Gemini API key. Please run this app locally with the dev server (npm run dev), or contact the administrator."
+    );
+  }
+  const modelName = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || "gemini-2.0-flash";
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: JSON.stringify({ catalog: body.catalog, text: body.text, batchNumber: body.batchNumber }),
+    config: {
+      systemInstruction: CLIENT_SYSTEM_INSTRUCTION,
+      responseMimeType: "application/json",
+      responseJsonSchema: CLIENT_QUESTION_SCHEMA,
+    },
+  });
+  if (!response.text) throw new Error("Empty AI response.");
+  const parsed = JSON.parse(response.text) as { questions: AIQuestion[] };
+  if (!Array.isArray(parsed.questions)) throw new Error("AI response did not contain a question list.");
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Unified API helpers with automatic server/client fallback
+// ---------------------------------------------------------------------------
+async function apiWithFallback(
+  path: string,
+  payload: BodyInit,
+  contentType?: string,
+  fallbackFn?: () => Promise<unknown>,
+): Promise<unknown> {
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: contentType ? { "content-type": contentType } : {},
+      body: payload,
+    });
+    const ct = response.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error((result as { error?: string }).error || "Request failed.");
+      return result;
+    }
+    // HTML response = static hosting; fall through to client fallback
+  } catch {
+    // Network error or non-JSON; fall through to client fallback
+  }
+  if (fallbackFn) return fallbackFn();
+  throw new Error("API unavailable. Please run the app locally with npm run dev.");
+}
+
 export function AiPdfImport({ exams, sections, chapters, questions, importedBy, onApprove }: {
   exams: Exam[]; sections: Section[]; chapters: Chapter[]; questions: Question[]; importedBy: string;
   onApprove: (question: Question, createChapter: boolean) => Promise<void>;
@@ -70,18 +210,16 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     setFile(selected);
   }
 
-  async function api(path: string, payload: BodyInit, contentType?: string) {
-    const response = await fetch(path, { method: "POST", credentials: "same-origin", headers: { ...(contentType ? { "content-type": contentType } : {}) }, body: payload });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Request failed.");
-    return result;
-  }
-
   async function runOcr(selectedFile: File): Promise<{ text: string; failedPages: number[]; lowConfidencePages: number[] }> {
     const response = await fetch("/api/pdf/ocr", { method: "POST", credentials: "same-origin", body: selectedFile });
+    const ct = response.headers.get("content-type") || "";
+    // If server unavailable (HTML response), fall back to Tesseract.js client-side
+    if (!ct.includes("application/x-ndjson") && !ct.includes("application/json")) {
+      return runOcrClientSide(selectedFile);
+    }
     if (!response.ok) {
       let message = "Unable to extract text from this PDF. Please try another PDF.";
-      try { message = (await response.json()).error || message; } catch { /* keep generic message */ }
+      try { message = (await response.json() as { error?: string }).error || message; } catch { /* keep generic message */ }
       throw new Error(message);
     }
     if (!response.body) throw new Error("Unable to extract text from this PDF. Please try another PDF.");
@@ -112,15 +250,70 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     return completed;
   }
 
+  async function runOcrClientSide(selectedFile: File): Promise<{ text: string; failedPages: number[]; lowConfidencePages: number[] }> {
+    setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Loading OCR engine (client-side)..." }));
+    const { createWorker } = await import("tesseract.js");
+    const worker = await createWorker("eng", 1, {
+      workerPath: "/node_modules/tesseract.js/dist/worker.min.js",
+      corePath: "/node_modules/tesseract.js-core/tesseract-core.wasm.js",
+      langPath: "/",
+      logger: () => {},
+    });
+    const arrayBuffer = await selectedFile.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pageCount = pdf.numPages;
+    const textParts: string[] = [];
+    const failedPages: number[] = [];
+    const lowConfidencePages: number[] = [];
+    for (let i = 1; i <= pageCount; i++) {
+      setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Running OCR (client-side)...", page: i, pageCount }));
+      try {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2 });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d")!;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const dataUrl = canvas.toDataURL("image/png");
+        const { data } = await worker.recognize(dataUrl);
+        if (data.confidence < 50) lowConfidencePages.push(i);
+        textParts.push(data.text);
+      } catch {
+        failedPages.push(i);
+      }
+    }
+    await worker.terminate();
+    return { text: textParts.join("\n\n"), failedPages, lowConfidencePages };
+  }
+
   async function analyzePdf() {
     if (!file) return;
     setBusy(true); setError(""); setItems([]); setOcrWarnings([]);
     setProgress({ step: 1, current: 0, total: 1, detected: 0, page: 0, pageCount: 0, label: "Reading PDF", stage: "reading" });
     try {
-      const extracted = await api("/api/pdf/text", file) as { text: string; ocrRequired?: boolean };
-      let pdfText = extracted.text;
+      // Try server, fall back to client-side pdfjs extraction
+      let pdfText = "";
+      let ocrRequired = false;
+      const serverAvailable = await isServerAvailable();
+
+      if (serverAvailable) {
+        const extracted = await apiWithFallback("/api/pdf/text", file) as { text: string; ocrRequired?: boolean };
+        pdfText = extracted.text;
+        ocrRequired = !!extracted.ocrRequired;
+      } else {
+        setProgress((current) => ({ ...current, step: 1, stage: "reading", label: "Extracting text from PDF (client-side)..." }));
+        pdfText = await extractPdfTextClientSide(file, (page, total) => {
+          setProgress((current) => ({ ...current, step: 1, stage: "reading", label: `Reading PDF page ${page} / ${total}...`, page, pageCount: total }));
+        });
+        // Heuristic: if text is very short relative to file size, it may be scanned
+        const compact = pdfText.replace(/\s/g, "");
+        const ratio = (compact.match(/[\p{L}\p{N}]/gu) ?? []).length / Math.max(compact.length, 1);
+        ocrRequired = compact.length < 20 || ratio < 0.4;
+      }
+
       let lowConfidencePages: number[] = [];
-      if (extracted.ocrRequired || !pdfText?.trim()) {
+      if (ocrRequired || !pdfText?.trim()) {
         setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR..." }));
         const ocr = await runOcr(file);
         pdfText = ocr.text;
@@ -142,7 +335,15 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
       for (let index = 0; index < batches.length; index++) {
         setProgress((current) => ({ ...current, step: 4, stage: "ai", label: "Analyzing questions with AI", current: Math.min(result.length + 1, estimatedTotal), total: estimatedTotal, detected: result.length }));
         try {
-          const response = await api("/api/pdf/analyze", JSON.stringify({ text: batches[index], catalog, batchNumber: index + 1, ocrSource: pdfText.includes("OCR confidence") }), "application/json") as { questions: AIQuestion[] };
+          const response = (serverAvailable
+            ? await apiWithFallback(
+                "/api/pdf/analyze",
+                JSON.stringify({ text: batches[index], catalog, batchNumber: index + 1, ocrSource: pdfText.includes("OCR confidence") }),
+                "application/json",
+                () => analyzeClientSide({ text: batches[index], catalog, batchNumber: index + 1 }),
+              )
+            : await analyzeClientSide({ text: batches[index], catalog, batchNumber: index + 1 })
+          ) as { questions: AIQuestion[] };
           for (const value of response.questions) {
             const analyzed = lowConfidencePages.length ? { ...value, confidence: "Low" as const, confidenceReason: `OCR quality was low on page${lowConfidencePages.length === 1 ? "" : "s"} ${lowConfidencePages.join(", ")}; verify the text and answer. ${value.confidenceReason}` } : value;
             const section = sections.find((entry) => entry.examId === analyzed.examId && entry.name.toLowerCase() === analyzed.section.toLowerCase());
@@ -175,7 +376,16 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     if (!entry.batchText) return;
     setBusy(true); setError("");
     try {
-      const response = await api("/api/pdf/analyze", JSON.stringify({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" }), "application/json") as { questions: AIQuestion[] };
+      const serverAvailable = await isServerAvailable();
+      const response = (serverAvailable
+        ? await apiWithFallback(
+            "/api/pdf/analyze",
+            JSON.stringify({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
+            "application/json",
+            () => analyzeClientSide({ text: entry.batchText!, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
+          )
+        : await analyzeClientSide({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" })
+      ) as { questions: AIQuestion[] };
       const retryItems: ReviewItem[] = response.questions.map((value) => {
         const section = sections.find((candidate) => candidate.examId === value.examId && candidate.name.toLowerCase() === value.section.toLowerCase());
         const chapter = chapters.find((candidate) => candidate.sectionId === section?.id && candidate.name.toLowerCase() === value.chapter.toLowerCase());
@@ -195,7 +405,7 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     const section = existingFor(item);
     if (!section) { setError(`Choose an existing section for Question ${item.value.questionNumber ?? "?"} before approving.`); return; }
     const chapter = targetChapter(item);
-    if (!chapter && !item.createChapter) { setError(`Confirm creation of the suggested chapter “${item.value.chapter}” before approving.`); return; }
+    if (!chapter && !item.createChapter) { setError(`Confirm creation of the suggested chapter "${item.value.chapter}" before approving.`); return; }
     try {
       await onApprove(questionToModel(item.value, section, chapter, `import-${crypto.randomUUID()}`), item.createChapter && !chapter);
       mark(item.id, "approved");
@@ -243,7 +453,7 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
               <label className="form-label">Subject / section<select value={section?.id ?? ""} disabled={entry.status !== "pending"} onChange={(event) => { const next = sections.find((candidate) => candidate.id === event.target.value); update(entry.id, { section: next?.name ?? "", subject: next?.name ?? "", chapter: "" }); }}><option value="">Select an existing section</option>{sections.filter((candidate) => candidate.examId === item.examId).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>
               <label className="form-label">Chapter<select value={matchingChapter?.id ?? "suggested"} disabled={entry.status !== "pending"} onChange={(event) => { const selected = chapters.find((candidate) => candidate.id === event.target.value); if (selected) { update(entry.id, { chapter: selected.name }); setItems((current) => current.map((row) => row.id === entry.id ? { ...row, createChapter: false, value: { ...row.value, chapter: selected.name } } : row)); } else setItems((current) => current.map((row) => row.id === entry.id ? { ...row, createChapter: false } : row)); }}><option value="suggested">Suggested new: {item.chapter || "Review needed"}</option>{chapters.filter((candidate) => candidate.sectionId === section?.id).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>
             </div>
-            {!matchingChapter && item.chapter && <label className="chapter-confirm"><input type="checkbox" checked={entry.createChapter} disabled={entry.status !== "pending"} onChange={(event) => setItems((current) => current.map((row) => row.id === entry.id ? { ...row, createChapter: event.target.checked } : row))} /> Create suggested chapter “{item.chapter}” on approval</label>}
+            {!matchingChapter && item.chapter && <label className="chapter-confirm"><input type="checkbox" checked={entry.createChapter} disabled={entry.status !== "pending"} onChange={(event) => setItems((current) => current.map((row) => row.id === entry.id ? { ...row, createChapter: event.target.checked } : row))} /> Create suggested chapter "{item.chapter}" on approval</label>}
             <div className="import-edit-grid"><label className="form-label">Options (one per line)<textarea rows={Math.min(6, Math.max(2, item.options.length))} value={optionString} disabled={entry.status !== "pending"} onChange={(event) => update(entry.id, { options: event.target.value.split(/\r?\n/).filter((line) => line.trim()) })} /></label><div><label className="form-label">Correct answer<input value={item.correctAnswer} disabled={entry.status !== "pending"} onChange={(event) => update(entry.id, { correctAnswer: event.target.value })} /></label><label className="form-label">Difficulty<select value={item.difficulty} disabled={entry.status !== "pending"} onChange={(event) => update(entry.id, { difficulty: event.target.value as Difficulty })}>{["Easy", "Medium", "Hard"].map((value) => <option key={value}>{value}</option>)}</select></label></div></div>
             <label className="form-label">Explanation<textarea rows={3} value={item.explanation} disabled={entry.status !== "pending"} onChange={(event) => update(entry.id, { explanation: event.target.value })} /></label>
             <div className="import-classification"><span><b>Topic:</b> {item.topic || "—"}</span><span><b>Tags:</b> {item.tags.join(", ") || "—"}</span><span className={`confidence-tag confidence-${item.confidence.toLowerCase()}`}>{item.confidenceReason || "No uncertainty noted"}</span></div>
