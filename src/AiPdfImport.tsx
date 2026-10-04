@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { AlertCircle, Check, FileText, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
+import { AlertCircle, Check, FileText, Key, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
 import type { Answer, Chapter, Difficulty, Exam, Question, Section } from "./model";
-import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { runAiWithFailover } from "./aiApiKeyStore";
+import { ApiKeyManager } from "./ApiKeyManager";
 
 // Set the pdf.js worker source for client-side PDF text extraction
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
@@ -17,6 +18,7 @@ type ReviewItem = { id: string; value: AIQuestion; status: "pending" | "approved
 type HistoryRow = { file: string; date: string; total: number; added: number; rejected: number; duplicates: number; failed: number; importedBy: string };
 const HISTORY_KEY = "mba-pdf-import-history";
 
+// Smart adaptive batching: 3 questions or ~3500 chars per batch to avoid token exhaustion
 function questionChunks(text: string) {
   const lines = text.split(/\r?\n/);
   const starts: number[] = [];
@@ -30,11 +32,26 @@ function questionChunks(text: string) {
   }
   if (parts.length < 2) {
     const paragraphs = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
-    parts = paragraphs.length > 1 ? paragraphs : text.match(/.{1,12000}(?:\s|$)/gs) ?? [text];
+    parts = paragraphs.length > 1 ? paragraphs : text.match(/.{1,3500}(?:\s|$)/gs) ?? [text];
   }
+
   const batches: string[] = [];
-  for (let i = 0; i < parts.length; i += 10) batches.push(parts.slice(i, i + 10).join("\n\n"));
-  return batches;
+  let currentBatch: string[] = [];
+  let currentLen = 0;
+
+  for (const part of parts) {
+    if (currentBatch.length >= 3 || (currentLen + part.length > 3500 && currentBatch.length > 0)) {
+      batches.push(currentBatch.join("\n\n"));
+      currentBatch = [];
+      currentLen = 0;
+    }
+    currentBatch.push(part);
+    currentLen += part.length;
+  }
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch.join("\n\n"));
+  }
+  return batches.length ? batches : [text];
 }
 
 function normalize(text: string) { return text.toLocaleLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, " ").trim(); }
@@ -50,8 +67,6 @@ function questionToModel(item: AIQuestion, section: Section, chapter: Chapter | 
     questionType: item.type, tags: item.tags, aiConfidence: item.confidence, aiConfidenceReason: item.confidenceReason,
   };
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Client-side PDF text extraction via pdfjs-dist (Firebase Hosting fallback)
@@ -77,7 +92,7 @@ async function extractPdfTextClientSide(
 }
 
 // ---------------------------------------------------------------------------
-// Client-side Gemini AI analysis (Firebase Hosting fallback)
+// Client-side Multi-Key AI analysis with automatic failover
 // ---------------------------------------------------------------------------
 const CLIENT_SYSTEM_INSTRUCTION =
   "Extract every complete question in the provided text. Return only questions present in the text. " +
@@ -121,27 +136,16 @@ const CLIENT_QUESTION_SCHEMA = {
 };
 
 async function analyzeClientSide(body: { text: string; catalog: object; batchNumber: number | string }): Promise<{ questions: AIQuestion[] }> {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (!apiKey) {
-    throw new Error(
-      "AI PDF analysis requires a Gemini API key. Please run this app locally with the dev server (npm run dev), or contact the administrator."
-    );
-  }
-  const modelName = (import.meta.env.VITE_GEMINI_MODEL as string | undefined) || "gemini-2.0-flash";
-  const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: modelName,
-    contents: JSON.stringify({ catalog: body.catalog, text: body.text, batchNumber: body.batchNumber }),
-    config: {
-      systemInstruction: CLIENT_SYSTEM_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseJsonSchema: CLIENT_QUESTION_SCHEMA,
-    },
-  });
-  if (!response.text) throw new Error("Empty AI response.");
-  const parsed = JSON.parse(response.text) as { questions: AIQuestion[] };
-  if (!Array.isArray(parsed.questions)) throw new Error("AI response did not contain a question list.");
-  return parsed;
+  return runAiWithFailover(
+    CLIENT_SYSTEM_INSTRUCTION,
+    JSON.stringify({ catalog: body.catalog, text: body.text, batchNumber: body.batchNumber }),
+    CLIENT_QUESTION_SCHEMA,
+    (rawJson) => {
+      const parsed = JSON.parse(rawJson) as { questions: AIQuestion[] };
+      if (!Array.isArray(parsed.questions)) throw new Error("AI response did not contain a question list.");
+      return parsed;
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -166,9 +170,8 @@ async function apiWithFallback(
       if (!response.ok) throw new Error((result as { error?: string }).error || "Request failed.");
       return result;
     }
-    // HTML response = static hosting; fall through to client fallback
   } catch {
-    // Network error or non-JSON; fall through to client fallback
+    // Fall through to client fallback
   }
   if (fallbackFn) return fallbackFn();
   throw new Error("API unavailable. Please run the app locally with npm run dev.");
@@ -187,6 +190,8 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   const [ocrWarnings, setOcrWarnings] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [showApiKeysModal, setShowApiKeysModal] = useState(false);
+
   const pending = items.filter((item) => item.status === "pending");
   const detectedSubjects = [...new Set(items.map((item) => item.value.subject).filter(Boolean))];
   const duplicates = useMemo(() => items.filter((item) => item.duplicate).length, [items]);
@@ -202,7 +207,6 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   async function runOcr(selectedFile: File): Promise<{ text: string; failedPages: number[]; lowConfidencePages: number[] }> {
     const response = await fetch("/api/pdf/ocr", { method: "POST", credentials: "same-origin", body: selectedFile });
     const ct = response.headers.get("content-type") || "";
-    // If server unavailable (HTML response), fall back to Tesseract.js client-side
     if (!ct.includes("application/x-ndjson") && !ct.includes("application/json")) {
       return runOcrClientSide(selectedFile);
     }
@@ -276,14 +280,32 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     return { text: textParts.join("\n\n"), failedPages, lowConfidencePages };
   }
 
+  // Single batch runner helper
+  async function runSingleBatch(batchText: string, catalog: object, batchNumber: number | string, lowConfidencePages: number[]) {
+    const response = await apiWithFallback(
+      "/api/pdf/analyze",
+      JSON.stringify({ text: batchText, catalog, batchNumber }),
+      "application/json",
+      () => analyzeClientSide({ text: batchText, catalog, batchNumber }),
+    ) as { questions: AIQuestion[] };
+
+    return response.questions.map((value) => {
+      const analyzed = lowConfidencePages.length ? { ...value, confidence: "Low" as const, confidenceReason: `OCR quality was low on page${lowConfidencePages.length === 1 ? "" : "s"} ${lowConfidencePages.join(", ")}; verify text. ${value.confidenceReason}` } : value;
+      const section = sections.find((entry) => entry.examId === analyzed.examId && entry.name.toLowerCase() === analyzed.section.toLowerCase());
+      if (!section) return { id: crypto.randomUUID(), value: { ...analyzed, confidence: "Low" as const, confidenceReason: `${analyzed.confidenceReason} No matching existing section was found.`, section: "Unmatched" }, status: "pending" as const, duplicate: false, edited: false, createChapter: false };
+      const chapter = chapters.find((entry) => entry.sectionId === section.id && entry.name.toLowerCase() === analyzed.chapter.toLowerCase());
+      const same = questions.some((q) => normalize(q.question) === normalize(analyzed.question)
+        && q.sectionId === section.id && (!chapter || q.chapterId === chapter.id)
+        && (["A", "B", "C", "D"] as Answer[]).every((key) => normalize(q.options[key] ?? "") === normalize(analyzed.options["ABCD".indexOf(key)] ?? "")));
+      return { id: crypto.randomUUID(), value: analyzed, status: "pending" as const, duplicate: same, edited: false, createChapter: false };
+    });
+  }
+
   async function analyzePdf() {
     if (!file) return;
     setBusy(true); setError(""); setItems([]); setOcrWarnings([]);
     setProgress({ step: 1, current: 0, total: 1, detected: 0, page: 0, pageCount: 0, label: "Reading PDF", stage: "reading" });
     try {
-      // ── Step 1: extract text ────────────────────────────────────────────────
-      // Always try the backend first; if it returns HTML (Firebase Hosting),
-      // fall back transparently to client-side pdfjs-dist extraction.
       let pdfText = "";
       let ocrRequired = false;
 
@@ -313,47 +335,80 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
         pdfText = ocr.text;
         lowConfidencePages = ocr.lowConfidencePages;
         const warnings: string[] = [];
-        if (ocr.lowConfidencePages.length) warnings.push(`OCR confidence is low on page${ocr.lowConfidencePages.length === 1 ? "" : "s"} ${ocr.lowConfidencePages.join(", ")}. Review question wording, options, and calculations carefully.`);
-        if (ocr.failedPages.length) warnings.push(`OCR could not read page${ocr.failedPages.length === 1 ? "" : "s"} ${ocr.failedPages.join(", ")}; processing continued for the other pages.`);
+        if (ocr.lowConfidencePages.length) warnings.push(`OCR confidence is low on page${ocr.lowConfidencePages.length === 1 ? "" : "s"} ${ocr.lowConfidencePages.join(", ")}. Review wording carefully.`);
+        if (ocr.failedPages.length) warnings.push(`OCR could not read page${ocr.failedPages.length === 1 ? "" : "s"} ${ocr.failedPages.join(", ")}; processing continued.`);
         setOcrWarnings(warnings);
       }
+
       setProgress((current) => ({ ...current, step: 3, stage: "questions", label: "Detecting questions", page: current.pageCount, detected: 0 }));
       const batches = questionChunks(pdfText);
       const numberedEstimate = (pdfText.match(/^\s*(?:(?:Q(?:uestion)?\s*)?\d{1,3}[.)\]:-]|\(\d{1,3}\)\s)/gim) ?? []).length;
-      const estimatedTotal = numberedEstimate || Math.max(batches.length, batches.length * 10);
+      const estimatedTotal = numberedEstimate || Math.max(batches.length, batches.length * 3);
       setProgress((current) => ({ ...current, step: 3, stage: "questions", label: "Detecting questions", current: numberedEstimate, total: estimatedTotal, detected: numberedEstimate }));
       await new Promise((resolve) => window.setTimeout(resolve, 100));
+
       const result: ReviewItem[] = [];
       const catalog = { exams, sections, chapters };
       setProgress((current) => ({ ...current, step: 4, stage: "ai", label: "Analyzing questions with AI", current: 1, total: estimatedTotal }));
+
       for (let index = 0; index < batches.length; index++) {
         setProgress((current) => ({ ...current, step: 4, stage: "ai", label: "Analyzing questions with AI", current: Math.min(result.length + 1, estimatedTotal), total: estimatedTotal, detected: result.length }));
-        try {
-          // Always try server first; fall back to direct Gemini API call if the
-          // server is unavailable (Firebase Hosting returns HTML for /api/* paths).
-          const response = await apiWithFallback(
-            "/api/pdf/analyze",
-            JSON.stringify({ text: batches[index], catalog, batchNumber: index + 1, ocrSource: lowConfidencePages.length > 0 }),
-            "application/json",
-            () => analyzeClientSide({ text: batches[index], catalog, batchNumber: index + 1 }),
-          ) as { questions: AIQuestion[] };
-          for (const value of response.questions) {
-            const analyzed = lowConfidencePages.length ? { ...value, confidence: "Low" as const, confidenceReason: `OCR quality was low on page${lowConfidencePages.length === 1 ? "" : "s"} ${lowConfidencePages.join(", ")}; verify the text and answer. ${value.confidenceReason}` } : value;
-            const section = sections.find((entry) => entry.examId === analyzed.examId && entry.name.toLowerCase() === analyzed.section.toLowerCase());
-            if (!section) { result.push({ id: crypto.randomUUID(), value: { ...analyzed, confidence: "Low", confidenceReason: `${analyzed.confidenceReason} No matching existing subject/section was found.`, section: "Unmatched" }, status: "pending", duplicate: false, edited: false, createChapter: false }); continue; }
-            const chapter = chapters.find((entry) => entry.sectionId === section.id && entry.name.toLowerCase() === analyzed.chapter.toLowerCase());
-            const same = questions.some((question) => normalize(question.question) === normalize(analyzed.question)
-              && question.sectionId === section.id && (!chapter || question.chapterId === chapter.id)
-              && (["A", "B", "C", "D"] as Answer[]).every((key) => normalize(question.options[key] ?? "") === normalize(analyzed.options["ABCD".indexOf(key)] ?? "")));
-            result.push({ id: crypto.randomUUID(), value: analyzed, status: "pending", duplicate: same, edited: false, createChapter: false });
-          }
-        } catch (reason) {
-          result.push({ id: crypto.randomUUID(), value: { questionNumber: null, question: `Batch ${index + 1} could not be processed`, type: "Other", options: [], correctAnswer: "", explanation: "", examId: exams[0]?.id ?? "", subject: "", section: "", chapter: "", topic: "", difficulty: "Medium", tags: [], confidence: "Low", confidenceReason: "Retry this batch after checking the error." }, status: "failed", batchText: batches[index], error: reason instanceof Error ? reason.message : "Processing failed", duplicate: false, edited: false, createChapter: false });
+
+        // Inter-batch throttling to avoid hitting requests-per-minute limits
+        if (index > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
         }
-        setItems([...result]); setProgress((current) => ({ ...current, step: 4, stage: "ai", label: "Analyzing questions with AI", current: Math.min(Math.max(result.length, index + 1), estimatedTotal), total: estimatedTotal, detected: result.filter((entry) => entry.status !== "failed").length }));
+
+        try {
+          const parsedItems = await runSingleBatch(batches[index], catalog, index + 1, lowConfidencePages);
+          result.push(...parsedItems);
+        } catch (reason) {
+          // Adaptive split-on-failure fallback: try splitting batch text in half
+          const halfLength = Math.floor(batches[index].length / 2);
+          const part1 = batches[index].slice(0, halfLength);
+          const part2 = batches[index].slice(halfLength);
+          let splitSuccess = false;
+
+          if (part1.trim() && part2.trim()) {
+            try {
+              const res1 = await runSingleBatch(part1, catalog, `${index + 1}a`, lowConfidencePages);
+              const res2 = await runSingleBatch(part2, catalog, `${index + 1}b`, lowConfidencePages);
+              result.push(...res1, ...res2);
+              splitSuccess = true;
+            } catch {
+              /* Keep splitSuccess false */
+            }
+          }
+
+          if (!splitSuccess) {
+            result.push({
+              id: crypto.randomUUID(),
+              value: {
+                questionNumber: null,
+                question: `Batch ${index + 1} could not be processed`,
+                type: "Other", options: [], correctAnswer: "", explanation: "",
+                examId: exams[0]?.id ?? "", subject: "", section: "", chapter: "", topic: "",
+                difficulty: "Medium", tags: [], confidence: "Low", confidenceReason: "Retry this batch after checking API key / network.",
+              },
+              status: "failed",
+              batchText: batches[index],
+              error: reason instanceof Error ? reason.message : "Processing failed",
+              duplicate: false, edited: false, createChapter: false,
+            });
+          }
+        }
+
+        setItems([...result]);
+        setProgress((current) => ({
+          ...current, step: 4, stage: "ai", label: "Analyzing questions with AI",
+          current: Math.min(Math.max(result.length, index + 1), estimatedTotal),
+          total: estimatedTotal,
+          detected: result.filter((entry) => entry.status !== "failed").length,
+        }));
       }
+
       setProgress((current) => ({ ...current, current: result.filter((entry) => entry.status !== "failed").length, total: result.filter((entry) => entry.status !== "failed").length || 1, detected: result.filter((entry) => entry.status !== "failed").length }));
-      if (!result.some((entry) => entry.status === "pending")) setError("No questions were detected in this PDF. Check that it contains selectable text and numbered or clearly separated questions.");
+      if (!result.some((entry) => entry.status === "pending")) setError("No questions were detected in this PDF. Check that it contains selectable text and numbered questions.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "PDF processing failed."); }
     finally { setBusy(false); }
   }
@@ -369,23 +424,12 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     if (!entry.batchText) return;
     setBusy(true); setError("");
     try {
-      // Try server; if Firebase Hosting returns HTML, fall back to client-side Gemini
-      const response = await apiWithFallback(
-        "/api/pdf/analyze",
-        JSON.stringify({ text: entry.batchText, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
-        "application/json",
-        () => analyzeClientSide({ text: entry.batchText!, catalog: { exams, sections, chapters }, batchNumber: "retry" }),
-      ) as { questions: AIQuestion[] };
-      const retryItems: ReviewItem[] = response.questions.map((value) => {
-        const section = sections.find((candidate) => candidate.examId === value.examId && candidate.name.toLowerCase() === value.section.toLowerCase());
-        const chapter = chapters.find((candidate) => candidate.sectionId === section?.id && candidate.name.toLowerCase() === value.chapter.toLowerCase());
-        const duplicate = section ? questions.some((question) => normalize(question.question) === normalize(value.question) && question.sectionId === section.id
-          && (!chapter || question.chapterId === chapter.id)
-          && (["A", "B", "C", "D"] as Answer[]).every((key) => normalize(question.options[key] ?? "") === normalize(value.options["ABCD".indexOf(key)] ?? ""))) : false;
-        return { id: crypto.randomUUID(), value: section ? value : { ...value, confidence: "Low", confidenceReason: `${value.confidenceReason} No matching existing subject/section was found.`, section: "Unmatched" }, status: "pending", duplicate, edited: false, createChapter: false };
+      const retryItems = await runSingleBatch(entry.batchText, { exams, sections, chapters }, "retry", []);
+      setItems((current) => {
+        const index = current.findIndex((item) => item.id === entry.id);
+        return [...current.slice(0, index), ...retryItems, ...current.slice(index + 1)];
       });
-      setItems((current) => { const index = current.findIndex((item) => item.id === entry.id); return [...current.slice(0, index), ...retryItems, ...current.slice(index + 1)]; });
-      if (!retryItems.length) setError("This batch did not return any questions. Check that the PDF text separates the questions clearly.");
+      if (!retryItems.length) setError("This batch did not return any questions.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Retry failed."); }
     finally { setBusy(false); }
   }
@@ -418,16 +462,41 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
 
   function onDrop(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setDragging(false); setPdf(event.dataTransfer.files[0]); }
   function onChange(event: ChangeEvent<HTMLInputElement>) { setPdf(event.target.files?.[0]); }
+
   return <div className="page-stack ai-import-page">
-    <section className="section-heading page-title"><div><span className="eyebrow"><Sparkles size={13} /> QUESTION BANK</span><h1>AI PDF Import</h1><p>Extract questions, match your existing exam structure, and review every result before adding it.</p></div></section>
-    <section className="settings-card"><h2>Upload Question PDF</h2><p>PDF only · selectable text · maximum 18 MB</p>
+    <section className="section-heading page-title">
+      <div>
+        <span className="eyebrow"><Sparkles size={13} /> QUESTION BANK</span>
+        <h1>AI PDF Import</h1>
+        <p>Extract questions, match your existing exam structure, and review every result before adding it.</p>
+      </div>
+      <button
+        type="button"
+        className="button button-outline api-keys-modal-trigger"
+        onClick={() => setShowApiKeysModal(!showApiKeysModal)}
+      >
+        <Key size={15} /> {showApiKeysModal ? "Hide API Key Pool" : "Manage API Keys Pool"}
+      </button>
+    </section>
+
+    {/* EXPANDABLE API KEYS MANAGER PANEL */}
+    {showApiKeysModal && (
+      <section className="api-keys-inline-section">
+        <ApiKeyManager onClosed={() => setShowApiKeysModal(false)} />
+      </section>
+    )}
+
+    <section className="settings-card">
+      <h2>Upload Question PDF</h2>
+      <p>PDF only · selectable text · maximum 18 MB</p>
       <div className={`pdf-dropzone ${dragging ? "pdf-dropzone-active" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
         <input ref={inputRef} type="file" accept="application/pdf,.pdf" onChange={onChange} hidden />
         {!file ? <><div className="pdf-upload-icon"><Upload size={22} /></div><b>Drag &amp; drop a PDF here</b><span>or</span><button className="button button-outline" onClick={() => inputRef.current?.click()}>Choose PDF</button></> : <div className="pdf-file-row"><FileText size={22} /><div><b>{file.name}</b><small>{(file.size / (1024 * 1024)).toFixed(2)} MB</small></div><button className="icon-button" aria-label="Remove PDF" onClick={() => setPdf(undefined)}><X size={17} /></button></div>}
       </div>
       <button className="button button-primary" disabled={!file || busy} onClick={() => void analyzePdf()}>{busy ? <><LoaderCircle size={16} className="spin-icon" /> Analyzing PDF…</> : <><Sparkles size={16} /> Analyze PDF</>}</button>
-      {busy && <div className="import-progress" role="status"><div><b>Step {progress.step}/4 · {progress.label}</b><span>{progress.stage === "ocr" ? `Page ${progress.page} / ${progress.pageCount || "…"}` : progress.stage === "ai" ? `Question ${progress.current} / ${progress.total}` : progress.stage === "questions" && !progress.detected ? "Finding question numbers…" : `Questions detected: ${progress.detected}`}</span></div><div className="progress-track"><span style={{ width: `${progress.stage === "reading" ? 5 : progress.stage === "ocr" ? 20 + (progress.pageCount ? Math.round(progress.page / progress.pageCount * 35) : 0) : progress.stage === "questions" ? 60 : 65 + Math.round(progress.current / Math.max(progress.total, 1) * 35)}%` }} /></div><small>PDF pages are processed one at a time. AI analysis runs in batches of about 10 questions.</small></div>}
+      {busy && <div className="import-progress" role="status"><div><b>Step {progress.step}/4 · {progress.label}</b><span>{progress.stage === "ocr" ? `Page ${progress.page} / ${progress.pageCount || "…"}` : progress.stage === "ai" ? `Question ${progress.current} / ${progress.total}` : progress.stage === "questions" && !progress.detected ? "Finding question numbers…" : `Questions detected: ${progress.detected}`}</span></div><div className="progress-track"><span style={{ width: `${progress.stage === "reading" ? 5 : progress.stage === "ocr" ? 20 + (progress.pageCount ? Math.round(progress.page / progress.pageCount * 35) : 0) : progress.stage === "questions" ? 60 : 65 + Math.round(progress.current / Math.max(progress.total, 1) * 35)}%` }} /></div><small>PDF pages are processed one at a time. AI analysis runs in adaptive batches of 3 questions with multi-key failover.</small></div>}
     </section>
+
     {error && <div className="answer-validation answer-validation-review" role="alert"><AlertCircle size={17} /><span>{error}</span><button className="icon-button" onClick={() => setError("")} aria-label="Dismiss"><X size={15} /></button></div>}
     {!!ocrWarnings.length && <div className="answer-validation answer-validation-review" role="status"><AlertCircle size={17} /><span>{ocrWarnings.join(" ")}</span></div>}
     {!!items.length && <>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   Activity, ArrowLeft, ArrowRight, Award, BookOpen, Check, ChevronDown, CircleHelp, ClipboardList,
-  Clock3, Filter, Flag, GraduationCap, Image as ImageIcon, LayoutDashboard, LogIn, LogOut, Menu, Moon, Search, ShieldCheck, Sun,
+  Clock3, Filter, Flag, GraduationCap, Image as ImageIcon, Key, LayoutDashboard, LogIn, LogOut, Menu, Moon, Search, ShieldCheck, Sun,
   Shuffle, Sparkles, Target, Trash2, UserRound, X, Zap, Users, Settings, Layers3,
 } from "lucide-react";
 import { initialChapters, initialExams, initialQuestions, initialSections } from "./data";
@@ -10,6 +10,7 @@ import { demoAnswerKeys } from "./demoAnswerKeys";
 import { findCat2024Slot3Solution } from "./cat2024Slot3Solutions";
 import { MathContent, MathPreview } from "./MathContent";
 import { AiPdfImport } from "./AiPdfImport";
+import { ApiKeyManager } from "./ApiKeyManager";
 import { firestore, isFirebaseConfigured } from "./firebase";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import {
@@ -24,7 +25,7 @@ type QuizState = { questions: Question[]; index: number; answers: Record<string,
 type EntityType = "exam" | "section" | "chapter" | "question";
 type Entity = Exam | Section | Chapter | Question;
 type LoginKind = "student" | "admin";
-type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "sections" | "chapters" | "statistics" | "settings" | "reports" | "ai-import";
+type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "sections" | "chapters" | "statistics" | "settings" | "reports" | "ai-import" | "api-keys";
 const defaultSettings: SiteSettings = {
   id: "public",
   title: "MBA Prep",
@@ -975,6 +976,7 @@ export default function App() {
     if (!isAdmin) return null;
     const students = userProfiles.filter((user) => user.role === "student");
     if (adminArea === "ai-import") return <AiPdfImport exams={exams} sections={sections} chapters={chapters} questions={questions} importedBy={profile?.name ?? "Administrator"} onApprove={addImportedQuestion} />;
+    if (adminArea === "api-keys") return <div className="page-stack admin-page"><ApiKeyManager /></div>;
     if (adminArea === "settings") return <SettingsPanel settings={settings} exams={exams} sections={sections} onSave={(value) => void saveSiteSettings(value)} />;
     if (adminArea === "reports") return <QuestionReportsPanel
       reports={questionReports} questions={questions}
@@ -1028,6 +1030,7 @@ export default function App() {
           ["create-student", "Create Student Account", UserRound],
           ["questions", "Questions", CircleHelp],
           ["ai-import", "AI PDF Import", Sparkles],
+          ["api-keys", "AI API Keys Pool", Key],
           ["sections", "Subjects / Sections", Layers3],
           ["chapters", "Chapters", BookOpen],
           ["add-question", "Add Question", Check],
