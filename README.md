@@ -7,8 +7,35 @@ A responsive React + TypeScript app for CAT, CMAT, MAT and XAT preparation. CAT,
 1. Install Node.js 20 or later.
 2. From this folder run `npm install`.
 3. Copy `.env.example` to `.env.local` and fill in the Firebase Web App values (see below).
-4. Run `npm run dev` and open the local URL printed by Vite.
-5. Build for production with `npm run build`.
+4. Run `npm run dev` and open `http://localhost:5173`.
+5. Build for production with `npm run build`, then serve it with `npm start`.
+
+## AI PDF question import
+
+The Admin Workspace includes **AI PDF Import**. The server first extracts selectable PDF text. If that text is missing or too short, it automatically renders pages one at a time with PDF.js and OCRs them with Tesseract.js. OCR progress, page confidence, and partial page failures are reported in the importer. The resulting text is sent in batches to the Gemini API through the official Google GenAI JavaScript SDK using structured JSON output for individual question review. `GEMINI_API_KEY` must be a Google AI Studio key and remains on the server. The existing Admin Login establishes a server-verified, HttpOnly session that authorizes PDF requests; no separate token is requested.
+
+Add these entries to the root `.env.local` file (copy `.env.example` first):
+
+```dotenv
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+Keep `GEMINI_API_KEY` private and out of frontend variables and source control. Put it in the root `.env.local` for local use or the server's private environment configuration in production. Sign in through the existing Admin Login; no API key or additional token is entered in the Admin Workspace. Restart the app after changing `.env.local`. `GEMINI_MODEL` is optional; the default is `gemini-3.8-flash`.
+
+Imports are saved to the same `Question` model and `mba-questions` localStorage bank used by the existing Add Question flow, and display in the existing Questions list and practice views. This project currently uses browser-local question storage for admin edits; it does not have a server-side question write path. Consequently, imported questions are available in that browser only and are not written to Firestore or synchronized across browsers. CAT, CMAT and XAT Firestore records remain read-only in this app. Do not assume import persistence across browsers until the app's storage/auth architecture is migrated to a shared backend.
+
+The PDF extractor handles common selectable-text PDFs, including Flate-compressed text streams. If text is absent or insufficient, the server renders pages sequentially and OCRs them in English. Scanned PDFs are limited to 250 pages per import; the existing 18 MB upload limit is unchanged. On the first OCR run, Tesseract downloads its English model and caches it under `.cache/tesseract`, so the server needs outbound network access for that initial download. No system-installed Tesseract or Poppler executable is required. Encrypted PDFs and unusual font encodings may not render reliably. OCR failures on individual pages are reported while remaining pages continue. Import history is browser-local.
+
+Run the focused selectable-text and two-page scanned-PDF regression check with `node scripts/test-pdf-ocr.mjs`.
+
+### Import checklist
+
+1. Add `GEMINI_API_KEY` to `.env.local`, along with any Firebase values the app needs.
+2. Run `npm run dev`; sign in as admin and open **AI PDF Import**.
+3. Upload a selectable-text PDF and click **Analyze PDF**.
+4. Inspect each question, correct classifications and answers as needed, explicitly approve any suggested chapter creation, then approve questions individually or approve the valid items together.
+5. Confirm approved records appear under **Questions** and in the matching practice section.
 
 ## Firebase setup
 

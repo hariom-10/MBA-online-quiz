@@ -9,12 +9,13 @@ import { applyClassification, classifyQuestion, type QuestionClassification } fr
 import { demoAnswerKeys } from "./demoAnswerKeys";
 import { findCat2024Slot3Solution } from "./cat2024Slot3Solutions";
 import { MathContent, MathPreview } from "./MathContent";
+import { AiPdfImport } from "./AiPdfImport";
 import { firestore, isFirebaseConfigured } from "./firebase";
-import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import {
-  clearLocalSession, createLocalStudent, deleteLocalStudent, loginLocalAccount, readLocalAttemptEvents,
+  clearLocalSession, createLocalStudent, deleteLocalStudent, loginLocalAccount, logoutAdminSession, readLocalAttemptEvents,
   readLocalStudents, recordLocalAttempt, resetLocalStudentPassword, restoreLocalSession as restoreAccountSession,
-  setLocalStudentDisabled, updateLocalStudent,
+  setLocalStudentDisabled, updateLocalStudent, verifyAdminSession,
 } from "./localAuth";
 import type { Answer, Attempt, Chapter, Difficulty, Exam, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, UserProfile } from "./model";
 
@@ -23,7 +24,7 @@ type QuizState = { questions: Question[]; index: number; answers: Record<string,
 type EntityType = "exam" | "section" | "chapter" | "question";
 type Entity = Exam | Section | Chapter | Question;
 type LoginKind = "student" | "admin";
-type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "sections" | "chapters" | "statistics" | "settings" | "reports";
+type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "sections" | "chapters" | "statistics" | "settings" | "reports" | "ai-import";
 const defaultSettings: SiteSettings = {
   id: "public",
   title: "MBA Prep",
@@ -157,7 +158,7 @@ export default function App() {
   const [sections, setSections] = useState<Section[]>(() => readLocal("mba-sections", initialSections));
   const [chapters, setChapters] = useState<Chapter[]>(() => readLocal("mba-chapters", initialChapters));
   const [questions, setQuestions] = useState<Question[]>(() => readLocal<Question[]>("mba-questions", initialQuestions)
-    .filter((question) => question.examId === "mat")
+    .filter((question) => !question.id.startsWith("firestore-"))
     .map((question) => demoAnswerKeys[question.id] ? { ...question, ...demoAnswerKeys[question.id] } : question));
   const [examQuestionsLoading, setExamQuestionsLoading] = useState(false);
   const [examQuestionsError, setExamQuestionsError] = useState("");
@@ -206,6 +207,19 @@ export default function App() {
   }, [profile]);
 
   useEffect(() => {
+    if (profile?.role !== "admin") return;
+    let active = true;
+    void verifyAdminSession().then((session) => {
+      if (!active || session) return;
+      clearLocalSession();
+      setProfile(null);
+      setView("dashboard");
+      setAdminArea("dashboard");
+    });
+    return () => { active = false; };
+  }, [profile?.role, profile?.uid]);
+
+  useEffect(() => {
     setTypedAnswer("");
   }, [quiz?.questions[quiz.index]?.id]);
 
@@ -232,14 +246,12 @@ export default function App() {
     localStorage.setItem("mba-exams", JSON.stringify(exams));
     localStorage.setItem("mba-sections", JSON.stringify(sections));
     localStorage.setItem("mba-chapters", JSON.stringify(chapters));
-    const previouslySavedQuestions = readLocal<Question[]>("mba-questions", []);
-    const preservedCloudExamRecords = previouslySavedQuestions.filter((question) => ["cat", "cmat", "xat"].includes(question.examId));
-    const localQuestions = questions.filter((question) => question.examId === "mat");
-    localStorage.setItem("mba-questions", JSON.stringify([...localQuestions, ...preservedCloudExamRecords]));
+    const localQuestions = questions.filter((question) => !question.id.startsWith("firestore-"));
+    localStorage.setItem("mba-questions", JSON.stringify(localQuestions));
   }, [exams, sections, chapters, questions]);
 
   useEffect(() => {
-    setQuestions((current) => current.filter((question) => !["cat", "cmat", "xat"].includes(question.examId)));
+    setQuestions((current) => current.filter((question) => !question.id.startsWith("firestore-")));
     if (!selectedExam || !["cat", "cmat", "xat"].includes(selectedExam)) {
       setExamQuestionsLoading(false);
       setExamQuestionsError("");
@@ -256,13 +268,14 @@ export default function App() {
     const examCode = selectedExam.toUpperCase();
     const examQuery = query(collection(firestore, "examQuestions"), where("exam", "==", examCode));
     return onSnapshot(examQuery, (snapshot) => {
+      const remoteIds = new Set(snapshot.docs.map((document) => document.id));
       const nextQuestions = snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), selectedExam, sections, chapters))
         .filter((question) => question.question.trim()
           && (question.answerMode === "text"
             ? Object.values(question.options).every((option) => !option.trim())
             : Object.values(question.options).every((option) => option.trim())));
       setQuestions((current) => [
-        ...current.filter((question) => question.examId !== selectedExam),
+        ...current.filter((question) => question.examId !== selectedExam || (!question.id.startsWith("firestore-") && !remoteIds.has(question.id))),
         ...nextQuestions,
       ]);
       const refreshedById = new Map(nextQuestions.map((question) => [question.id, question]));
@@ -480,6 +493,44 @@ export default function App() {
     }
     const saved = { ...question, chapterId: chapter.id, topic: chapter.name };
     return saved;
+  }
+  async function addImportedQuestion(question: Question, createChapter: boolean) {
+    if (!isAdmin) throw new Error("Only the authorized admin account can import questions.");
+    if (createChapter && !chapters.some((chapter) => chapter.sectionId === question.sectionId && chapter.name.trim().toLowerCase() === (question.topic ?? "").trim().toLowerCase())) {
+      const chapter: Chapter = { id: makeId("chapter"), examId: question.examId, sectionId: question.sectionId, name: (question.topic ?? "Suggested chapter").trim() };
+      setChapters((current) => [...current, chapter]);
+      question = { ...question, chapterId: chapter.id, topic: chapter.name };
+      await saveApprovedQuestionToFirestore(question);
+      setQuestions((current) => current.some((entry) => entry.id === question.id) ? current : [...current, question]);
+      setToast("Question and approved chapter added to the question bank");
+      window.setTimeout(() => setToast(""), 2500);
+      return;
+    }
+    const saved = await persistClassifiedQuestion(question, [...chapters]);
+    await saveApprovedQuestionToFirestore(saved);
+    setQuestions((current) => current.some((entry) => entry.id === saved.id) ? current : [...current, saved]);
+    setToast("Question added to the question bank");
+    window.setTimeout(() => setToast(""), 2500);
+  }
+  async function saveApprovedQuestionToFirestore(question: Question) {
+    if (!["cat", "cmat", "xat"].includes(question.examId)) return;
+    if (!isFirebaseConfigured || !firestore) {
+      throw new Error("Firebase is not configured. Add the existing Firebase Web App values to .env.local and restart the app.");
+    }
+    const section = sections.find((entry) => entry.id === question.sectionId);
+    if (!section) throw new Error("Choose a valid section before approving this question.");
+    const options = question.options;
+    await setDoc(doc(firestore, "examQuestions", question.id), {
+      exam: question.examId.toUpperCase(),
+      question: question.question,
+      optionA: options.A ?? "",
+      optionB: options.B ?? "",
+      optionC: options.C ?? "",
+      optionD: options.D ?? "",
+      answer: question.correctAnswer ?? "",
+      category: section.name,
+      explanation: question.explanation ?? "",
+    });
   }
   async function submitQuestionReport(question: Question, reason: string, studentExplanation: string, evidence?: File) {
     if (!profile || profile.role !== "student") throw new Error("Sign in with a student account to report a question.");
@@ -706,6 +757,7 @@ export default function App() {
   }
   async function signOut() {
     try {
+      await logoutAdminSession();
       clearLocalSession();
       setProfile(null);
       setAttempts([]);
@@ -922,6 +974,7 @@ export default function App() {
   function renderAdmin() {
     if (!isAdmin) return null;
     const students = userProfiles.filter((user) => user.role === "student");
+    if (adminArea === "ai-import") return <AiPdfImport exams={exams} sections={sections} chapters={chapters} questions={questions} importedBy={profile?.name ?? "Administrator"} onApprove={addImportedQuestion} />;
     if (adminArea === "settings") return <SettingsPanel settings={settings} exams={exams} sections={sections} onSave={(value) => void saveSiteSettings(value)} />;
     if (adminArea === "reports") return <QuestionReportsPanel
       reports={questionReports} questions={questions}
@@ -974,6 +1027,7 @@ export default function App() {
           ["students", "Students", Users],
           ["create-student", "Create Student Account", UserRound],
           ["questions", "Questions", CircleHelp],
+          ["ai-import", "AI PDF Import", Sparkles],
           ["sections", "Subjects / Sections", Layers3],
           ["chapters", "Chapters", BookOpen],
           ["add-question", "Add Question", Check],

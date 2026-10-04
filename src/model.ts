@@ -22,6 +22,19 @@ export type Question = {
   sourceSlot?: string;
   sourceSection?: string;
   sourceUrl?: string;
+  exam?: string;
+  year?: number;
+  slot?: number | string;
+  subject?: string;
+  question_number?: number;
+  correct_answer?: string;
+  source?: string;
+  confidence?: string;
+  optionsList?: string[];
+  questionType?: string;
+  tags?: string[];
+  aiConfidence?: "High" | "Medium" | "Low";
+  aiConfidenceReason?: string;
 };
 export type Attempt = {
   questionId: string;

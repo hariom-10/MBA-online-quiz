@@ -1,3 +1,8 @@
 node_modules
 dist
+.cache/
+.firebase/
+.env
 .env.local
+.env.*
+!.env.example

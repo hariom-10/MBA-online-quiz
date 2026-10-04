@@ -10,8 +10,6 @@ type LocalStudent = UserProfile & {
 const STUDENTS_KEY = "mba-local-students";
 const EVENTS_KEY = "mba-local-attempt-events";
 const SESSION_KEY = "mba-demo-user";
-const ADMIN_SALT = "mba-prep-initial-admin-v1";
-const ADMIN_HASH = "ceaf104b4d5088774e289a46d9f99f4f9014d82602cc50d55d3d1dd0e24cd050";
 const ITERATIONS = 210_000;
 
 function read<T>(key: string, fallback: T): T {
@@ -47,6 +45,19 @@ export function restoreLocalSession(): UserProfile | null {
     return null;
   }
   return publicProfile(account);
+}
+
+export async function verifyAdminSession(): Promise<UserProfile | null> {
+  try {
+    const response = await fetch("/api/auth/session", { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const data = await response.json() as { profile?: UserProfile };
+    return data.profile?.role === "admin" && data.profile.uid === "local-admin" ? data.profile : null;
+  } catch { return null; }
+}
+
+export async function logoutAdminSession(): Promise<void> {
+  try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch { /* local sign-out still clears the browser profile */ }
 }
 
 function publicProfile(account: LocalStudent): UserProfile {
@@ -99,19 +110,10 @@ function validateInput(input: StudentAccountInput, requirePassword: boolean) {
 export async function loginLocalAccount(studentId: string, password: string, kind: "student" | "admin"): Promise<UserProfile> {
   const { key } = cleanStudentId(studentId);
   if (kind === "admin") {
-    if (key !== "admin" || await derive(password, ADMIN_SALT) !== ADMIN_HASH) {
-      throw new Error("Admin ID or password is incorrect.");
-    }
-    const profile: UserProfile = {
-      uid: "local-admin",
-      name: "Administrator",
-      email: "",
-      studentId: "admin",
-      role: "admin",
-      status: "active",
-      createdAt: new Date().toISOString(),
-      lastLogin: new Date().toISOString(),
-    };
+    const response = await fetch("/api/auth/admin/login", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ studentId: key, password }) });
+    const result = await response.json() as { profile?: UserProfile; error?: string };
+    if (!response.ok || result.profile?.role !== "admin") throw new Error(result.error || "Admin ID or password is incorrect.");
+    const profile = result.profile;
     saveLocalSession(profile);
     return profile;
   }
