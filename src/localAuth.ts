@@ -10,6 +10,8 @@ type LocalStudent = UserProfile & {
 const STUDENTS_KEY = "mba-local-students";
 const EVENTS_KEY = "mba-local-attempt-events";
 const SESSION_KEY = "mba-demo-user";
+const ADMIN_SALT = "mba-prep-initial-admin-v1";
+const ADMIN_HASH = "ceaf104b4d5088774e289a46d9f99f4f9014d82602cc50d55d3d1dd0e24cd050";
 const ITERATIONS = 210_000;
 
 function read<T>(key: string, fallback: T): T {
@@ -50,14 +52,29 @@ export function restoreLocalSession(): UserProfile | null {
 export async function verifyAdminSession(): Promise<UserProfile | null> {
   try {
     const response = await fetch("/api/auth/session", { credentials: "same-origin" });
-    if (!response.ok) return null;
-    const data = await response.json() as { profile?: UserProfile };
-    return data.profile?.role === "admin" && data.profile.uid === "local-admin" ? data.profile : null;
-  } catch { return null; }
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      if (!response.ok) return null;
+      const data = await response.json() as { profile?: UserProfile };
+      return data.profile?.role === "admin" && data.profile.uid === "local-admin" ? data.profile : null;
+    }
+  } catch {
+    /* backend server not available (e.g. Firebase static hosting) */
+  }
+  const session = restoreLocalSession();
+  return session?.role === "admin" && session.uid === "local-admin" ? session : null;
 }
 
 export async function logoutAdminSession(): Promise<void> {
-  try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch { /* local sign-out still clears the browser profile */ }
+  try {
+    const response = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      await response.json();
+    }
+  } catch {
+    /* local sign-out still clears the browser profile */
+  }
 }
 
 function publicProfile(account: LocalStudent): UserProfile {
@@ -110,10 +127,58 @@ function validateInput(input: StudentAccountInput, requirePassword: boolean) {
 export async function loginLocalAccount(studentId: string, password: string, kind: "student" | "admin"): Promise<UserProfile> {
   const { key } = cleanStudentId(studentId);
   if (kind === "admin") {
-    const response = await fetch("/api/auth/admin/login", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ studentId: key, password }) });
-    const result = await response.json() as { profile?: UserProfile; error?: string };
-    if (!response.ok || result.profile?.role !== "admin") throw new Error(result.error || "Admin ID or password is incorrect.");
-    const profile = result.profile;
+    let serverOk = false;
+    let serverProfile: UserProfile | null = null;
+    try {
+      const response = await fetch("/api/auth/admin/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ studentId: key, password }),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const result = await response.json() as { profile?: UserProfile; error?: string };
+        if (response.ok && result.profile?.role === "admin") {
+          serverProfile = result.profile;
+          serverOk = true;
+        } else if (!response.ok) {
+          throw new Error(result.error || "Admin ID or password is incorrect.");
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === "Admin ID or password is incorrect.") {
+        throw err;
+      }
+      /* on static hosting (e.g. Firebase), API route returns HTML, gracefully fall back */
+    }
+
+    if (serverOk && serverProfile) {
+      saveLocalSession(serverProfile);
+      return serverProfile;
+    }
+
+    const envAdminPassword = import.meta.env.VITE_ADMIN_PASSWORD;
+    const isEnvMatch = Boolean(envAdminPassword && password === envAdminPassword);
+    const isHashMatch = (await derive(password, ADMIN_SALT)) === ADMIN_HASH;
+    const storedHash = localStorage.getItem("mba-admin-password-hash");
+    const storedSalt = localStorage.getItem("mba-admin-password-salt") || ADMIN_SALT;
+    const isStoredMatch = Boolean(storedHash && (await derive(password, storedSalt)) === storedHash);
+
+    if (key !== "admin" || (!isEnvMatch && !isHashMatch && !isStoredMatch)) {
+      throw new Error("Admin ID or password is incorrect.");
+    }
+
+    const profile: UserProfile = {
+      uid: "local-admin",
+      name: "Administrator",
+      email: "",
+      studentId: "admin",
+      role: "admin",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      lastLogin: new Date().toISOString(),
+    };
     saveLocalSession(profile);
     return profile;
   }

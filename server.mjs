@@ -157,9 +157,11 @@ async function handleApi(req, res) {
       const id = typeof input.studentId === "string" ? input.studentId.trim().toLowerCase() : "";
       const password = typeof input.password === "string" ? input.password : "";
       if (id !== "admin" || !password || password.length > 128) return json(res, 401, { error: "Admin ID or password is incorrect." }), true;
+      const envPass = process.env.ADMIN_PASSWORD || process.env.VITE_ADMIN_PASSWORD;
+      const isEnvMatch = Boolean(envPass && password === envPass);
       const candidate = pbkdf2Sync(password, adminSalt, 210_000, 32, "sha256");
       const expected = Buffer.from(adminHash, "hex");
-      if (!timingSafeEqual(candidate, expected)) return json(res, 401, { error: "Admin ID or password is incorrect." }), true;
+      if (!isEnvMatch && !timingSafeEqual(candidate, expected)) return json(res, 401, { error: "Admin ID or password is incorrect." }), true;
       return json(res, 200, { profile: createAdminSession(req, res) }), true;
     } catch {
       return json(res, 400, { error: "Sign in request was invalid." }), true;
