@@ -47,7 +47,13 @@ export async function handleApi(req, res) {
     if (!currentAdmin(req)) return json(res, 401, { error: "Admin session required." }), true;
     
     try {
-      const questions = JSON.parse((await bodyBuffer(req, 5 * 1024 * 1024)).toString("utf8")); // 5MB limit
+      let questions;
+      if (req.body && Array.isArray(req.body)) {
+        questions = req.body;
+      } else {
+        const raw = (await bodyBuffer(req, 5 * 1024 * 1024)).toString("utf8");
+        questions = raw ? JSON.parse(raw) : (Array.isArray(req.body) ? req.body : []);
+      }
       if (!Array.isArray(questions) || questions.length === 0 || questions.length > 500) {
         return json(res, 400, { error: "Invalid batch size." }), true;
       }
@@ -60,7 +66,8 @@ export async function handleApi(req, res) {
       await batch.commit();
       return json(res, 200, { success: true, count: questions.length }), true;
     } catch (e) {
-      return json(res, 500, { error: "Failed to persist questions." }), true;
+      console.error("[api/admin/questions/import] Persistence error:", e);
+      return json(res, 500, { error: e instanceof Error ? e.message : "Failed to persist questions." }), true;
     }
   }
   // ------------------------------------
