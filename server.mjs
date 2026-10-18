@@ -5,6 +5,8 @@ import { createServer as createViteServer } from "vite";
 import { handleApi } from "./server/api/router.mjs";
 import { loadEnvFile } from "./server/utils.mjs";
 
+export { handleApi };
+
 const root = process.cwd();
 // In development, prefer the project's .env.local AI key over stale shell values.
 // Production keeps the standard process-environment-first precedence.

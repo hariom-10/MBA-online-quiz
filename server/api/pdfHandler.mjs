@@ -36,9 +36,9 @@ const questionSchema = {
 export async function analyze(body) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("AI service is not configured. Please contact the system administrator.");
-  let model = process.env.GEMINI_MODEL || "gemini-2.5-flash ";
-  if (!model || model.includes("3.6") || model.includes("3.8") || model.includes("flash-medium")) {
-    model = "gemini-2.5-flash";
+  let model = (process.env.GEMINI_MODEL || "gemini-3.8-flash").trim();
+  if (!model || model.includes("2.5") || model.includes("3.6") || model.includes("flash-medium")) {
+    model = "gemini-3.8-flash";
   }
   try {
     const ai = new GoogleGenAI({ apiKey });

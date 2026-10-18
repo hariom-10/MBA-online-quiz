@@ -19,20 +19,20 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
   gemini: {
     name: "Google Gemini",
     keyUrl: "https://aistudio.google.com/app/apikey",
-    defaultModel: "gemini-2.5-flash",
+    defaultModel: "gemini-3.8-flash",
     models: [
-      "gemini-2.5-flash",
+      "gemini-3.8-flash",
+      "gemini-2.0-flash",
       "gemini-1.5-flash",
       "gemini-1.5-pro",
-      "gemini-2.0-flash",
     ],
   },
   openrouter: {
     name: "OpenRouter",
     keyUrl: "https://openrouter.ai/keys",
-    defaultModel: "google/gemini-2.5-flash",
+    defaultModel: "google/gemini-3.8-flash",
     models: [
-      "google/gemini-2.5-flash",
+      "google/gemini-3.8-flash",
       "google/gemini-2.0-flash-exp:free",
       "openai/gpt-4o-mini",
       "anthropic/claude-3.5-haiku",
@@ -49,10 +49,10 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
 };
 
 export function normalizeModelName(model: string | undefined, provider: AiProvider): string {
-  if (!model) return provider === "openrouter" ? "google/gemini-2.5-flash" : "gemini-2.5-flash";
+  if (!model) return provider === "openrouter" ? "google/gemini-3.8-flash" : "gemini-3.8-flash";
   const m = model.trim();
-  if (m.includes("3.6") || m.includes("3.8") || m.includes("flash-medium")) {
-    return provider === "openrouter" ? "google/gemini-2.5-flash" : "gemini-2.5-flash";
+  if (m === "gemini-2.5-flash" || m === "google/gemini-2.5-flash" || m.includes("2.5") || m.includes("flash-medium")) {
+    return provider === "openrouter" ? "google/gemini-3.8-flash" : "gemini-3.8-flash";
   }
   return m;
 }

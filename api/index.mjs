@@ -1,4 +1,4 @@
-import { handleApi } from '../server.mjs';
+import { handleApi } from '../server/api/router.mjs';
 
 export const config = {
   api: {

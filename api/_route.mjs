@@ -1,4 +1,4 @@
-import { handleApi } from "../server.mjs";
+import { handleApi } from "../server/api/router.mjs";
 
 /** Vercel Node function adapter. Each public route has its own entrypoint so
  * Vercel discovers it without depending on a catch-all rewrite. */
