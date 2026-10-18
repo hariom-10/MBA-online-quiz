@@ -59,7 +59,31 @@ if (!fs.existsSync(jsonPath)) {
 }
 
 const questions = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-console.log(`Found ${questions.length} questions to import into Firestore 'questions' collection.`);
+console.log(`Found ${questions.length} questions to import into Firestore 'examQuestions' collection.`);
+
+function cleanOption(text) {
+  if (!text) return '';
+  return text.replace(/^\([A-E]\)\s*/i, '').replace(/^[A-E]\.\s*/i, '').trim();
+}
+
+function getCategory(subject) {
+  if (subject === 'QUANT') return 'Quantitative Aptitude';
+  if (subject === 'VARC') return 'Verbal Ability & Reading Comprehension';
+  if (subject === 'DILR') return 'Data Interpretation';
+  return subject || 'Quantitative Aptitude';
+}
+
+function extractAnswer(q, optA, optB, optC, optD) {
+  const raw = (q.correct_answer || '').trim();
+  if (!q.options || q.options.length === 0) return raw;
+  const match = raw.match(/Choice\s+([A-D])/i) || raw.match(/^\(?([A-D])\)?/i);
+  if (match) return match[1].toUpperCase();
+  if (optA && optA.toLowerCase() === raw.toLowerCase()) return 'A';
+  if (optB && optB.toLowerCase() === raw.toLowerCase()) return 'B';
+  if (optC && optC.toLowerCase() === raw.toLowerCase()) return 'C';
+  if (optD && optD.toLowerCase() === raw.toLowerCase()) return 'D';
+  return raw;
+}
 
 async function importQuestions() {
   const BATCH_SIZE = 50;
@@ -72,21 +96,34 @@ async function importQuestions() {
     for (const q of chunk) {
       // Deterministic document ID: e.g. cat_2024_s1_quant_q01
       const docId = `cat_2024_s${q.slot}_${q.subject.toLowerCase()}_q${String(q.question_number).padStart(2, '0')}`;
-      const docRef = doc(db, 'questions', docId);
+      const docRef = doc(db, 'examQuestions', docId);
 
-      // Store all 11 required fields
+      const optA = cleanOption(q.options?.[0]);
+      const optB = cleanOption(q.options?.[1]);
+      const optC = cleanOption(q.options?.[2]);
+      const optD = cleanOption(q.options?.[3]);
+      const answer = extractAnswer(q, optA, optB, optC, optD);
+      const category = getCategory(q.subject);
+
+      // Store in examQuestions format expected by App.tsx and README
       const docData = {
-        exam: q.exam || 'CAT',
+        exam: (q.exam || 'CAT').toUpperCase(),
         year: Number(q.year) || 2024,
         slot: Number(q.slot) || 1,
+        category,
         subject: q.subject,
         question_number: Number(q.question_number),
         question: q.question,
-        options: Array.isArray(q.options) ? q.options : [],
-        correct_answer: q.correct_answer,
-        explanation: q.explanation,
+        optionA: optA,
+        optionB: optB,
+        optionC: optC,
+        optionD: optD,
+        answer,
+        explanation: q.explanation || '',
         source: q.source || '',
         confidence: q.confidence || 'High',
+        options: Array.isArray(q.options) ? q.options : [],
+        correct_answer: q.correct_answer || '',
         updatedAt: new Date().toISOString()
       };
 
@@ -98,10 +135,11 @@ async function importQuestions() {
     console.log(`Uploaded batch ${Math.floor(i / BATCH_SIZE) + 1} (${importedCount}/${questions.length} questions)...`);
   }
 
-  console.log(`\n🎉 Successfully imported all ${importedCount} CAT 2024 questions into Firestore 'questions' collection!`);
+  console.log(`\n🎉 Successfully imported all ${importedCount} CAT 2024 questions into Firestore 'examQuestions' collection!`);
 }
 
 importQuestions().catch((err) => {
   console.error('Import failed with error:', err);
   process.exit(1);
 });
+

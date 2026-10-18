@@ -10,8 +10,8 @@ export default defineConfig({
         server.middlewares.use(async (req, res, next) => {
           if (req.url?.startsWith("/api/")) {
             try {
-              // @ts-expect-error server.mjs is JS without declarations
-              const { handleApi } = await import("./server.mjs");
+              // @ts-expect-error router.mjs is JS without declarations
+              const { handleApi } = await import("./server/api/router.mjs");
               if (await handleApi(req, res)) return;
             } catch (err) {
               console.error("[vite-api-middleware] Error handling API request:", err);
