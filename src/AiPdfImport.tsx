@@ -205,53 +205,55 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   }
 
   async function runOcr(selectedFile: File): Promise<{ text: string; failedPages: number[]; lowConfidencePages: number[] }> {
-    const response = await fetch("/api/pdf/ocr", { method: "POST", credentials: "same-origin", body: selectedFile });
-    const ct = response.headers.get("content-type") || "";
-    if (!ct.includes("application/x-ndjson") && !ct.includes("application/json")) {
-      return runOcrClientSide(selectedFile);
+    try {
+      const response = await fetch("/api/pdf/ocr", { method: "POST", credentials: "same-origin", body: selectedFile });
+      const ct = response.headers.get("content-type") || "";
+      if (!ct.includes("application/x-ndjson") && !ct.includes("application/json")) {
+        return await runOcrClientSide(selectedFile);
+      }
+      if (!response.ok || !response.body) {
+        return await runOcrClientSide(selectedFile);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pendingLine = "";
+      const completion: { value: { text: string; failedPages: number[]; lowConfidencePages: number[] } | null } = { value: null };
+      let serverFailed = false;
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        try {
+          const event = JSON.parse(line) as { type: string; text?: string; page?: number; pageCount?: number; confidence?: number; failedPages?: number[]; lowConfidencePages?: number[]; message?: string; status?: string; progress?: number };
+          if (event.type === "start") setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR...", pageCount: event.pageCount ?? 0, page: 0 }));
+          if (event.type === "engine") setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Loading OCR engine..." }));
+          if (event.type === "page") setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR...", page: event.page ?? current.page, pageCount: event.pageCount ?? current.pageCount }));
+          if (event.type === "complete" && typeof event.text === "string") completion.value = { text: event.text, failedPages: event.failedPages ?? [], lowConfidencePages: event.lowConfidencePages ?? [] };
+          if (event.type === "error") serverFailed = true;
+        } catch {
+          serverFailed = true;
+        }
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        pendingLine += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = pendingLine.split(/\r?\n/);
+        pendingLine = lines.pop() ?? "";
+        for (const line of lines) handleLine(line);
+        if (done) break;
+      }
+      if (pendingLine) handleLine(pendingLine);
+      if (serverFailed || !completion.value?.text.trim()) {
+        return await runOcrClientSide(selectedFile);
+      }
+      return completion.value;
+    } catch {
+      return await runOcrClientSide(selectedFile);
     }
-    if (!response.ok) {
-      let message = "Unable to extract text from this PDF. Please try another PDF.";
-      try { message = (await response.json() as { error?: string }).error || message; } catch { /* keep generic message */ }
-      throw new Error(message);
-    }
-    if (!response.body) throw new Error("Unable to extract text from this PDF. Please try another PDF.");
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let pendingLine = "";
-    const completion: { value: { text: string; failedPages: number[]; lowConfidencePages: number[] } | null } = { value: null };
-    const handleLine = (line: string) => {
-      if (!line.trim()) return;
-      const event = JSON.parse(line) as { type: string; text?: string; page?: number; pageCount?: number; confidence?: number; failedPages?: number[]; lowConfidencePages?: number[]; message?: string; status?: string; progress?: number };
-      if (event.type === "start") setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR...", pageCount: event.pageCount ?? 0, page: 0 }));
-      if (event.type === "engine") setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Loading OCR engine..." }));
-      if (event.type === "page") setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR...", page: event.page ?? current.page, pageCount: event.pageCount ?? current.pageCount }));
-      if (event.type === "complete" && typeof event.text === "string") completion.value = { text: event.text, failedPages: event.failedPages ?? [], lowConfidencePages: event.lowConfidencePages ?? [] };
-      if (event.type === "error") throw new Error(event.message || "Unable to extract text from this PDF. Please try another PDF.");
-    };
-    while (true) {
-      const { value, done } = await reader.read();
-      pendingLine += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-      const lines = pendingLine.split(/\r?\n/);
-      pendingLine = lines.pop() ?? "";
-      for (const line of lines) handleLine(line);
-      if (done) break;
-    }
-    if (pendingLine) handleLine(pendingLine);
-    const completed = completion.value;
-    if (!completed?.text.trim()) throw new Error("Unable to extract text from this PDF. Please try another PDF.");
-    return completed;
   }
 
   async function runOcrClientSide(selectedFile: File): Promise<{ text: string; failedPages: number[]; lowConfidencePages: number[] }> {
-    setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Loading OCR engine (client-side)..." }));
+    setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Running OCR in browser..." }));
     const { createWorker } = await import("tesseract.js");
-    const worker = await createWorker("eng", 1, {
-      workerPath: "/node_modules/tesseract.js/dist/worker.min.js",
-      corePath: "/node_modules/tesseract.js-core/tesseract-core.wasm.js",
-      langPath: "/",
-      logger: () => {},
-    });
+    const worker = await createWorker("eng");
     const arrayBuffer = await selectedFile.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const pageCount = pdf.numPages;
@@ -259,7 +261,7 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
     const failedPages: number[] = [];
     const lowConfidencePages: number[] = [];
     for (let i = 1; i <= pageCount; i++) {
-      setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "Running OCR (client-side)...", page: i, pageCount }));
+      setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: `Running OCR in browser: Page ${i} / ${pageCount}...`, page: i, pageCount }));
       try {
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 2 });
@@ -330,14 +332,21 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
 
       let lowConfidencePages: number[] = [];
       if (ocrRequired || !pdfText?.trim()) {
-        setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR..." }));
-        const ocr = await runOcr(file);
-        pdfText = ocr.text;
-        lowConfidencePages = ocr.lowConfidencePages;
-        const warnings: string[] = [];
-        if (ocr.lowConfidencePages.length) warnings.push(`OCR confidence is low on page${ocr.lowConfidencePages.length === 1 ? "" : "s"} ${ocr.lowConfidencePages.join(", ")}. Review wording carefully.`);
-        if (ocr.failedPages.length) warnings.push(`OCR could not read page${ocr.failedPages.length === 1 ? "" : "s"} ${ocr.failedPages.join(", ")}; processing continued.`);
-        setOcrWarnings(warnings);
+        // Before running heavy OCR, verify if client-side pdfjs can extract readable text directly
+        const clientResult = await clientExtract();
+        if (clientResult.text?.trim() && (!clientResult.ocrRequired || clientResult.text.trim().length > 60)) {
+          pdfText = clientResult.text;
+          ocrRequired = false;
+        } else {
+          setProgress((current) => ({ ...current, step: 2, stage: "ocr", label: "PDF contains scanned pages. Running OCR..." }));
+          const ocr = await runOcr(file);
+          pdfText = ocr.text;
+          lowConfidencePages = ocr.lowConfidencePages;
+          const warnings: string[] = [];
+          if (ocr.lowConfidencePages.length) warnings.push(`OCR confidence is low on page${ocr.lowConfidencePages.length === 1 ? "" : "s"} ${ocr.lowConfidencePages.join(", ")}. Review wording carefully.`);
+          if (ocr.failedPages.length) warnings.push(`OCR could not read page${ocr.failedPages.length === 1 ? "" : "s"} ${ocr.failedPages.join(", ")}; processing continued.`);
+          setOcrWarnings(warnings);
+        }
       }
 
       setProgress((current) => ({ ...current, step: 3, stage: "questions", label: "Detecting questions", page: current.pageCount, detected: 0 }));
