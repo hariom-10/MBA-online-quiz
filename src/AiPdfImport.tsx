@@ -128,7 +128,7 @@ const CLIENT_QUESTION_SCHEMA = {
           confidence: { type: "string", enum: ["High", "Medium", "Low"] },
           confidenceReason: { type: "string" },
         },
-        required: ["questionNumber", "question", "type", "options", "correctAnswer", "explanation", "examId", "subject", "section", "chapter", "topic", "difficulty", "tags", "confidence", "confidenceReason"],
+        required: ["question", "type", "options", "correctAnswer", "explanation", "examId", "subject", "section", "chapter", "topic", "difficulty", "tags", "confidence", "confidenceReason"],
       },
     },
   },

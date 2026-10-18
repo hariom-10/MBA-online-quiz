@@ -10,7 +10,7 @@ const questionSchema = {
       items: {
         type: "object",
         properties: {
-          questionNumber: { type: ["number", "null"] },
+          questionNumber: { type: "number", nullable: true },
           question: { type: "string" },
           type: { type: "string" },
           options: { type: "array", items: { type: "string" } },
