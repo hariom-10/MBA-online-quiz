@@ -1,11 +1,36 @@
 import { readFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 
 export const adminSalt = "mba-prep-initial-admin-v1";
 export const adminHash = "a5a00b9a04a9dfc91b8d3aff26a7005515a478ac50348aa1a46fe13579e419e2";
 export const adminSessions = new Map();
 export const sessionCookie = "mba_admin_session";
 export const sessionLifetimeMs = 8 * 60 * 60 * 1000;
+
+const sessionSecret = process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD || process.env.VITE_ADMIN_PASSWORD || "mba-prep-admin-secret-key-v1";
+
+function signToken(payload) {
+  const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = createHmac("sha256", sessionSecret).update(data).digest("base64url");
+  return `${data}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [data, sig] = token.split(".");
+  if (!data || !sig) return null;
+  const expectedSig = createHmac("sha256", sessionSecret).update(data).digest("base64url");
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(data, "base64url").toString("utf8"));
+    if (!payload || payload.expiresAt <= Date.now()) return null;
+    return payload.profile;
+  } catch {
+    return null;
+  }
+}
 
 export function loadEnvFile(path, { preferLocalGeminiKey = false } = {}) {
   return readFile(path, "utf8").then((contents) => {
@@ -28,8 +53,9 @@ export function parseCookies(header = "") {
 }
 
 export function cookieOptions(req, maxAge) {
-  const secure = req.socket.encrypted || req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
-  return `Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+  const isHttps = Boolean(req.socket?.encrypted || req.headers?.["x-forwarded-proto"] === "https");
+  const secure = isHttps ? "; Secure" : "";
+  return `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
 export function sameOrigin(req) {
@@ -40,19 +66,20 @@ export function sameOrigin(req) {
 }
 
 export function currentAdmin(req) {
-  const value = parseCookies(req.headers.cookie)[sessionCookie];
-  const session = value && adminSessions.get(value);
-  if (!session) return null;
-  if (session.expiresAt <= Date.now()) { adminSessions.delete(value); return null; }
-  session.expiresAt = Date.now() + sessionLifetimeMs;
-  return session.profile;
+  const token = parseCookies(req.headers.cookie)[sessionCookie];
+  if (!token) return null;
+  const verified = verifyToken(token);
+  if (verified) return verified;
+  const session = adminSessions.get(token);
+  if (session && session.expiresAt > Date.now()) return session.profile;
+  return null;
 }
 
 export function createAdminSession(req, res) {
-  const key = randomBytes(32).toString("base64url");
   const profile = { uid: "local-admin", name: "Administrator", email: "", studentId: "admin", role: "admin", status: "active", createdAt: new Date().toISOString(), lastLogin: new Date().toISOString() };
-  adminSessions.set(key, { profile, expiresAt: Date.now() + sessionLifetimeMs });
-  res.setHeader("Set-Cookie", `${sessionCookie}=${key}; ${cookieOptions(req, sessionLifetimeMs / 1000)}`);
+  const token = signToken({ profile, expiresAt: Date.now() + sessionLifetimeMs });
+  adminSessions.set(token, { profile, expiresAt: Date.now() + sessionLifetimeMs });
+  res.setHeader("Set-Cookie", `${sessionCookie}=${token}; ${cookieOptions(req, sessionLifetimeMs / 1000)}`);
   return profile;
 }
 
