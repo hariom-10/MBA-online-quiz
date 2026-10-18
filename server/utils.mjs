@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 
 export const adminSalt = "mba-prep-initial-admin-v1";
-export const adminHash = "ceaf104b4d5088774e289a46d9f99f4f9014d82602cc50d55d3d1dd0e24cd050";
+export const adminHash = "a5a00b9a04a9dfc91b8d3aff26a7005515a478ac50348aa1a46fe13579e419e2";
 export const adminSessions = new Map();
 export const sessionCookie = "mba_admin_session";
 export const sessionLifetimeMs = 8 * 60 * 60 * 1000;
@@ -57,6 +57,11 @@ export function createAdminSession(req, res) {
 }
 
 export async function bodyBuffer(req, max = 18 * 1024 * 1024) {
+  if (req.body !== undefined && req.body !== null) {
+    if (Buffer.isBuffer(req.body)) return req.body;
+    if (typeof req.body === "string") return Buffer.from(req.body, "utf8");
+    if (typeof req.body === "object") return Buffer.from(JSON.stringify(req.body), "utf8");
+  }
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
