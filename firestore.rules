@@ -2,16 +2,21 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /examQuestions/{document=**} {
-      allow read, write: if true;
+    // Shared exam questions
+    match /examQuestions/{questionId} {
+      allow read: if true;
+      allow write: if false; // Temporarily disabled until secure backend endpoint is implemented
     }
 
-    match /questions/{document=**} {
-      allow read, write: if true;
+    // Students and other data - restrict access
+    match /students/{studentId} {
+      allow read: if true; // Or restrict to owner if possible
+      allow write: if false; 
     }
 
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false; // Deny all other access by default
     }
   }
 }
+  

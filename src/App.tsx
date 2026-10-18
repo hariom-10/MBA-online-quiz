@@ -500,21 +500,37 @@ export default function App() {
   }
   async function addImportedQuestion(question: Question, createChapter: boolean) {
     if (!isAdmin) throw new Error("Only the authorized admin account can import questions.");
-    if (createChapter && !chapters.some((chapter) => chapter.sectionId === question.sectionId && chapter.name.trim().toLowerCase() === (question.topic ?? "").trim().toLowerCase())) {
-      const chapter: Chapter = { id: makeId("chapter"), examId: question.examId, sectionId: question.sectionId, name: (question.topic ?? "Suggested chapter").trim() };
-      setChapters((current) => [...current, chapter]);
-      question = { ...question, chapterId: chapter.id, topic: chapter.name };
-      await saveApprovedQuestionToFirestore(question);
+
+    // Prepare payload
+    const payload = { ...question, createChapter };
+
+    try {
+      const response = await fetch("/api/admin/questions/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify([payload]),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Import failed with status ${response.status}`);
+      }
+
+      // If successful, update UI state
+      if (createChapter) {
+        const chapter: Chapter = { id: makeId("chapter"), examId: question.examId, sectionId: question.sectionId, name: (question.topic ?? "Suggested chapter").trim() };
+        setChapters((current) => [...current, chapter]);
+        question = { ...question, chapterId: chapter.id, topic: chapter.name };
+      } else {
+        question = await persistClassifiedQuestion(question, [...chapters]);
+      }
+
       setQuestions((current) => current.some((entry) => entry.id === question.id) ? current : [...current, question]);
-      setToast("Question and approved chapter added to the question bank");
+      setToast("Question added to the question bank");
       window.setTimeout(() => setToast(""), 2500);
-      return;
+    } catch (error) {
+      throw error; // Re-throw to be handled by the caller (AiPdfImport's approve function)
     }
-    const saved = await persistClassifiedQuestion(question, [...chapters]);
-    await saveApprovedQuestionToFirestore(saved);
-    setQuestions((current) => current.some((entry) => entry.id === saved.id) ? current : [...current, saved]);
-    setToast("Question added to the question bank");
-    window.setTimeout(() => setToast(""), 2500);
   }
   async function saveApprovedQuestionToFirestore(question: Question) {
     if (!isFirebaseConfigured || !firestore) return;

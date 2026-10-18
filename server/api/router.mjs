@@ -1,6 +1,7 @@
 import { pbkdf2Sync, timingSafeEqual } from "node:crypto";
 import { adminSalt, adminHash, adminSessions, sessionCookie, sessionLifetimeMs, json, parseCookies, cookieOptions, sameOrigin, currentAdmin, createAdminSession, bodyBuffer } from "../utils.mjs";
 import { extractPdfText, isUsablePdfText, recognizePdf, analyze, streamPdfOcr } from "./pdfHandler.mjs";
+import { db } from "../adminFirebase.mjs";
 
 export async function handleApi(req, res) {
   const pathname = new URL(req.url, "http://localhost").pathname;
@@ -33,6 +34,31 @@ export async function handleApi(req, res) {
     res.setHeader("Set-Cookie", `${sessionCookie}=; ${cookieOptions(req, 0)}`);
     return json(res, 200, { ok: true }), true;
   }
+
+  // --- Secure Admin Import Endpoint ---
+  if (pathname === "/api/admin/questions/import" && req.method === "POST") {
+    if (!sameOrigin(req)) return json(res, 403, { error: "Request rejected." }), true;
+    if (!currentAdmin(req)) return json(res, 401, { error: "Admin session required." }), true;
+    
+    try {
+      const questions = JSON.parse((await bodyBuffer(req, 5 * 1024 * 1024)).toString("utf8")); // 5MB limit
+      if (!Array.isArray(questions) || questions.length === 0 || questions.length > 500) {
+        return json(res, 400, { error: "Invalid batch size." }), true;
+      }
+
+      const batch = db.batch();
+      questions.forEach((q) => {
+        const docRef = db.collection("examQuestions").doc(q.id);
+        batch.set(docRef, { ...q, importedAt: new Date().toISOString(), status: "published" });
+      });
+      await batch.commit();
+      return json(res, 200, { success: true, count: questions.length }), true;
+    } catch (e) {
+      return json(res, 500, { error: "Failed to persist questions." }), true;
+    }
+  }
+  // ------------------------------------
+
   if (req.method !== "POST" || !["/api/pdf/text", "/api/pdf/ocr", "/api/pdf/analyze"].includes(pathname)) return json(res, 404, { error: "Unknown API endpoint." }), true;
   if (!sameOrigin(req)) return json(res, 403, { error: "Request was rejected." }), true;
   if (!currentAdmin(req)) return json(res, 401, { error: "Your admin session expired. Sign in again." }), true;
