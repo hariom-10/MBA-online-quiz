@@ -1,0 +1,7 @@
+.git
+.cache
+.firebase
+dist
+node_modules
+eng.traineddata
+*.log
