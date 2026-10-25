@@ -16,7 +16,7 @@ import {
   Flag,
 } from "lucide-react";
 import type { Question, ExtractedPaper, CbtQuestionStatus, CbtExamResult, Section, Answer } from "./model";
-import { MathContent } from "./MathContent";
+import { MathContent, QuestionGraphViewer } from "./MathContent";
 
 interface CbtMockExamProps {
   paper: ExtractedPaper;
@@ -423,6 +423,9 @@ export function CbtMockExam({
 
               <div className="cbt-q-content">
                 <MathContent text={currentQuestion.question} />
+                {currentQuestion.imageUrl && (
+                  <QuestionGraphViewer imageUrl={currentQuestion.imageUrl} alt={currentQuestion.imageAlt || "Question Graph / Diagram"} />
+                )}
               </div>
 
               {/* Options or TITA Input */}
@@ -907,6 +910,9 @@ function CbtScorecard({
 
                 <div className="cbt-review-q-text">
                   <MathContent text={q.question} />
+                  {q.imageUrl && (
+                    <QuestionGraphViewer imageUrl={q.imageUrl} alt={q.imageAlt || "Question Graph"} />
+                  )}
                 </div>
 
                 {/* Option Review */}

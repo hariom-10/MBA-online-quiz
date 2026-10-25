@@ -37,6 +37,9 @@ export type Question = {
   aiConfidenceReason?: string;
   paperId?: string;
   paperTitle?: string;
+  imageUrl?: string;
+  imageAlt?: string;
+  hasDiagram?: boolean;
 };
 
 export type ExtractedPaper = {

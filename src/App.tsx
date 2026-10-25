@@ -8,7 +8,7 @@ import { initialChapters, initialExams, initialQuestions, initialSections } from
 import { applyClassification, classifyQuestion, type QuestionClassification } from "./classifier";
 import { demoAnswerKeys } from "./demoAnswerKeys";
 import { findCat2024Slot3Solution } from "./cat2024Slot3Solutions";
-import { MathContent, MathPreview } from "./MathContent";
+import { MathContent, MathPreview, QuestionGraphViewer } from "./MathContent";
 import { AiPdfImport } from "./AiPdfImport";
 import { ApiKeyManager } from "./ApiKeyManager";
 import { CbtMockExam } from "./CbtMockExam";
@@ -113,6 +113,9 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
   const paperTitle = typeof row.paperTitle === "string" ? row.paperTitle : undefined;
   const paperId = typeof row.paperId === "string" ? row.paperId : undefined;
   const source = typeof row.source === "string" ? row.source : undefined;
+  const imageUrl = typeof row.imageUrl === "string" && row.imageUrl.trim() ? row.imageUrl : undefined;
+  const imageAlt = typeof row.imageAlt === "string" ? row.imageAlt : undefined;
+  const hasDiagram = Boolean(row.hasDiagram || imageUrl);
 
   return {
     id: `firestore-${id}`,
@@ -135,6 +138,9 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
     paperTitle,
     source,
     question_number: typeof row.question_number === "number" ? row.question_number : (Number(row.question_number) || undefined),
+    imageUrl,
+    imageAlt,
+    hasDiagram,
   };
 }
 async function fetchFirestoreExamQuestions(examId: string, sections: Section[], chapters: Chapter[]): Promise<Question[]> {
@@ -644,6 +650,9 @@ export default function App() {
       source: question.source ?? "",
       sourceYear: question.year ?? question.sourceYear ?? new Date().getFullYear(),
       sourceSlot: question.slot ?? question.sourceSlot ?? "",
+      imageUrl: question.imageUrl ?? "",
+      imageAlt: question.imageAlt ?? "",
+      hasDiagram: Boolean(question.hasDiagram || question.imageUrl),
       updatedAt: new Date().toISOString(),
     }, { merge: true });
   }
@@ -1083,6 +1092,7 @@ export default function App() {
       <article className="question-card">
         <div className="question-meta"><span className="soft-badge">{activeExam?.name ?? exams.find((exam) => exam.id === q.examId)?.name} · {section?.name}</span><span className={`difficulty difficulty-${q.difficulty.toLowerCase()}`}>{q.difficulty}</span></div>
         <p className="question-number">Question {quiz.index + 1}</p><h2><MathContent text={q.question} /></h2>
+        {q.imageUrl && <QuestionGraphViewer imageUrl={q.imageUrl} alt={q.imageAlt || `Question ${quiz.index + 1} Diagram`} />}
         {q.answerMode === "text" ? <div className="text-answer-entry">
           <label htmlFor="typed-answer">Your answer</label>
           <div><input id="typed-answer" value={typedAnswer} onChange={(event) => setTypedAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && typedAnswer.trim() && !answered) void chooseAnswer(typedAnswer); }} disabled={answered || savingQuestionId === q.id} placeholder="Type your answer" />
@@ -1926,7 +1936,7 @@ function QuizResult({ result, backLabel, onAgain, onWrong, onDashboard, onBack }
     <section className="result-review"><div className="section-heading"><div><h2>Question review</h2><p>See the answer and outcome for every question.</p></div></div>{result.questions.map((question, index) => {
       const answer = result.answers[question.id];
       const isCorrect = answer !== null && answer !== undefined && isCorrectAnswer(question, answer);
-      return <article className="review-row" key={`${question.id}-${index}`}><span className={`review-status ${answer === undefined || answer === null ? "review-skip" : isCorrect ? "review-good" : "review-bad"}`}>{answer === undefined || answer === null ? "—" : isCorrect ? <Check size={15} /> : <X size={15} />}</span><div><h3><MathContent text={question.question} /></h3><p>{answer === undefined || answer === null ? "Unattempted" : `Your answer: ${answer} · Correct answer: ${question.correctAnswer}`}</p>{question.explanation && <MathContent className="solution-content" text={question.explanation} />}</div><span className="status-pill">{answer === undefined || answer === null ? "Skipped" : isCorrect ? "Correct" : "Wrong"}</span></article>;
+      return <article className="review-row" key={`${question.id}-${index}`}><span className={`review-status ${answer === undefined || answer === null ? "review-skip" : isCorrect ? "review-good" : "review-bad"}`}>{answer === undefined || answer === null ? "—" : isCorrect ? <Check size={15} /> : <X size={15} />}</span><div><h3><MathContent text={question.question} /></h3>{question.imageUrl && <QuestionGraphViewer imageUrl={question.imageUrl} alt={question.imageAlt || "Question Graph"} />}<p>{answer === undefined || answer === null ? "Unattempted" : `Your answer: ${answer} · Correct answer: ${question.correctAnswer}`}</p>{question.explanation && <MathContent className="solution-content" text={question.explanation} />}</div><span className="status-pill">{answer === undefined || answer === null ? "Skipped" : isCorrect ? "Correct" : "Wrong"}</span></article>;
     })}</section>
     <div className="result-actions"><button className="button button-primary" onClick={onAgain}><Shuffle size={16} /> Practice again</button>{incorrectQuestions.length > 0 && <button className="button button-outline" onClick={onWrong}><Target size={16} /> Review wrong questions</button>}<button className="button button-quiet" onClick={onDashboard}>Back to exam dashboard</button></div>
   </div>;

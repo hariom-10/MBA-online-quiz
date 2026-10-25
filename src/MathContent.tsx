@@ -1,5 +1,6 @@
 import katex from "katex";
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
+import { Maximize2, X, ZoomIn } from "lucide-react";
 import "katex/dist/katex.min.css";
 
 type MathPart = { value: string; math: boolean; display?: boolean };
@@ -88,6 +89,10 @@ export function MathContent({ text, className = "" }: { text: string; className?
     {lines.map((line, index) => {
       const trimmed = line.trim();
       if (!trimmed) return <div className="math-spacer" key={`space-${index}`} aria-hidden="true" />;
+      const imgMatch = trimmed.match(/^!\[(.*?)\]\((.*?)\)$/);
+      if (imgMatch) {
+        return <QuestionGraphViewer key={`img-${index}`} alt={imgMatch[1]} imageUrl={imgMatch[2]} />;
+      }
       const semanticLine = trimmed.replace(/^\*\*|\*\*$/g, "");
       const heading = /^(?:solution|step\s+\d+\s*:|final answer\s*:|answer\s*:)/i.test(semanticLine);
       const final = /^(?:final answer|answer)\s*:/i.test(semanticLine);
@@ -96,6 +101,54 @@ export function MathContent({ text, className = "" }: { text: string; className?
       </p>;
     })}
   </div>;
+}
+
+export function QuestionGraphViewer({
+  imageUrl,
+  alt = "Question Diagram or Graph",
+  caption,
+}: {
+  imageUrl: string;
+  alt?: string;
+  caption?: string;
+}) {
+  const [zoomOpen, setZoomOpen] = useState(false);
+
+  if (!imageUrl) return null;
+
+  return (
+    <div className="question-graph-container">
+      <div className="question-graph-frame" onClick={() => setZoomOpen(true)}>
+        <img src={imageUrl} alt={alt} className="question-graph-img" />
+        <div className="question-graph-overlay">
+          <span><ZoomIn size={15} /> Click to enlarge graph</span>
+        </div>
+      </div>
+      {caption && <small className="question-graph-caption">{caption}</small>}
+
+      {zoomOpen && (
+        <div className="graph-lightbox-overlay" onClick={() => setZoomOpen(false)}>
+          <div className="graph-lightbox-card" onClick={(e) => e.stopPropagation()}>
+            <div className="graph-lightbox-header">
+              <span><Maximize2 size={16} /> {alt}</span>
+              <button
+                type="button"
+                className="graph-lightbox-close"
+                onClick={() => setZoomOpen(false)}
+                aria-label="Close enlarged graph"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="graph-lightbox-body">
+              <img src={imageUrl} alt={alt} className="graph-lightbox-img" />
+            </div>
+            <small className="graph-lightbox-hint">Click outside or press Close to return to question.</small>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function MathPreview({ label, text, className = "" }: { label: string; text: string; className?: string }) {

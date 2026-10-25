@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import {
   AlertCircle, Check, Download, FileText, FolderArchive, Key, LoaderCircle,
-  RefreshCw, Sparkles, Trash2, Upload, X, Layers
+  RefreshCw, Sparkles, Trash2, Upload, X, Layers, Crop, Image as ImageIcon
 } from "lucide-react";
 import type { Answer, Chapter, Difficulty, Exam, ExtractedPaper, Question, Section } from "./model";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { runAiWithFailover } from "./aiApiKeyStore";
 import { ApiKeyManager } from "./ApiKeyManager";
+import { PdfGraphSnipper } from "./PdfGraphSnipper";
 import { firestore, isFirebaseConfigured } from "./firebase";
 import { collection, deleteDoc, doc, getDocs, setDoc } from "firebase/firestore";
 
@@ -30,6 +31,9 @@ export type AIQuestion = {
   tags: string[];
   confidence: "High" | "Medium" | "Low";
   confidenceReason: string;
+  imageUrl?: string;
+  imageAlt?: string;
+  hasDiagram?: boolean;
 };
 
 export type ReviewItem = {
@@ -124,6 +128,9 @@ function questionToModel(
     sourceSlot: paperInfo.slot,
     source: paperInfo.fileName,
     question_number: item.questionNumber || undefined,
+    imageUrl: item.imageUrl,
+    imageAlt: item.imageAlt,
+    hasDiagram: Boolean(item.hasDiagram || item.imageUrl),
   };
 }
 
@@ -309,6 +316,7 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [showApiKeysModal, setShowApiKeysModal] = useState(false);
+  const [snippingItem, setSnippingItem] = useState<ReviewItem | null>(null);
 
   // Sync extracted papers from client Firestore and backend on mount
   useEffect(() => {
@@ -1309,12 +1317,39 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
                             <span><b>Topic:</b> {item.topic || "—"}</span>
                             <span><b>Tags:</b> {item.tags.join(", ") || "—"}</span>
                             <span className={`confidence-tag confidence-${item.confidence.toLowerCase()}`}>
-                              {item.confidenceReason || "No uncertainty noted"}
+                              Confidence: {item.confidence} {item.confidenceReason ? `(${item.confidenceReason})` : ""}
                             </span>
                           </div>
 
+                          {/* Attached Graph Preview */}
+                          {item.imageUrl && (
+                            <div className="import-attached-graph-preview">
+                              <div className="attached-graph-header">
+                                <span><ImageIcon size={14} /> Attached Graph / Diagram:</span>
+                                <button
+                                  type="button"
+                                  className="text-button remove-graph-btn"
+                                  onClick={() => update(entry.id, { imageUrl: undefined, hasDiagram: false })}
+                                >
+                                  <X size={14} /> Remove Graph
+                                </button>
+                              </div>
+                              <div className="attached-graph-thumb-wrap">
+                                <img src={item.imageUrl} alt="Attached Graph" className="attached-graph-thumb" />
+                              </div>
+                            </div>
+                          )}
+
                           {entry.status === "pending" && (
                             <div className="import-card-actions">
+                              <button
+                                type="button"
+                                className={`button ${item.imageUrl ? "button-outline" : "button-secondary"} btn-snip-graph`}
+                                onClick={() => setSnippingItem(entry)}
+                                title="Crop or attach graph/diagram from PDF for this question"
+                              >
+                                <Crop size={15} /> {item.imageUrl ? "Edit / Replace Graph" : "📷 Snip Graph from PDF"}
+                              </button>
                               <button type="button" className="button button-quiet" onClick={() => mark(entry.id, "rejected")}>
                                 {entry.duplicate ? "Skip duplicate" : "Reject"}
                               </button>
@@ -1454,6 +1489,18 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
             )}
           </div>
         </section>
+      )}
+
+      {snippingItem && (
+        <PdfGraphSnipper
+          file={file}
+          questionNumber={snippingItem.value.questionNumber}
+          onApply={(croppedDataUrl) => {
+            update(snippingItem.id, { imageUrl: croppedDataUrl, hasDiagram: true });
+            setSnippingItem(null);
+          }}
+          onClose={() => setSnippingItem(null)}
+        />
       )}
     </div>
   );
