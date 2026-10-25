@@ -15,7 +15,7 @@ import { ApiKeyManager } from "./ApiKeyManager";
 import { CbtMockExam } from "./CbtMockExam";
 import { PageTransition } from "./components/ui";
 import { firestore, isFirebaseConfigured } from "./firebase";
-import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import {
   clearLocalSession, createLocalStudent, deleteLocalStudent, loginLocalAccount, logoutAdminSession, readLocalAttemptEvents,
   readLocalStudents, recordLocalAttempt, resetLocalStudentPassword, restoreLocalSession as restoreAccountSession,
@@ -425,30 +425,39 @@ export default function App() {
   }, [exams, sections, chapters, questions]);
 
   useEffect(() => {
-    setQuestions((current) => current.filter((question) => !question.id.startsWith("firestore-")));
-    if (!selectedExam) {
-      setExamQuestionsLoading(false);
-      setExamQuestionsError("");
-      return;
-    }
     if (!isFirebaseConfigured || !firestore) {
       setExamQuestionsLoading(false);
       return;
     }
 
+    const inAdminMode = isAdmin || view === "admin";
     setExamQuestionsLoading(true);
     setExamQuestionsError("");
-    const examCode = selectedExam.toUpperCase();
-    const examQuery = query(collection(firestore, "examQuestions"), where("exam", "in", [examCode, selectedExam.toLowerCase()]));
+
+    // In admin mode, load all exam questions from Firestore so the admin dashboard and question management have the complete catalog (CAT, CMAT, MAT, XAT).
+    // In student mode with selectedExam, query for the selected exam.
+    const examQuery = inAdminMode || !selectedExam
+      ? query(collection(firestore, "examQuestions"))
+      : query(collection(firestore, "examQuestions"), where("exam", "in", [selectedExam.toUpperCase(), selectedExam.toLowerCase()]));
+
     return onSnapshot(examQuery, (snapshot) => {
-      const remoteIds = new Set(snapshot.docs.map((document) => document.id));
       const nextQuestions = snapshot.docs
-        .map((document) => mapFirestoreQuestion(document.id, document.data(), selectedExam, sections, chapters))
+        .map((document) => {
+          const data = document.data();
+          const docExamId = String(data.examId || data.exam || selectedExam || "cat").toLowerCase();
+          return mapFirestoreQuestion(document.id, data, docExamId, sections, chapters);
+        })
         .filter((question) => Boolean(question.question.trim()));
-      setQuestions((current) => [
-        ...current.filter((question) => question.examId !== selectedExam || (!question.id.startsWith("firestore-") && !remoteIds.has(question.id))),
-        ...nextQuestions,
-      ]);
+
+      setQuestions((current) => {
+        const map = new Map<string, Question>();
+        // Preserve current questions
+        current.forEach((q) => map.set(q.id, q));
+        // Merge in remote questions
+        nextQuestions.forEach((q) => map.set(q.id, q));
+        return Array.from(map.values());
+      });
+
       const refreshedById = new Map(nextQuestions.map((question) => [question.id, question]));
       setQuiz((current) => current ? {
         ...current,
@@ -459,19 +468,21 @@ export default function App() {
       setExamQuestionsLoading(false);
       setExamQuestionsError("");
     }, (reason) => {
-      console.error(`Firestore question listener failed for ${examCode}:`, reason);
+      console.error("Firestore question listener note:", reason);
       setExamQuestionsLoading(false);
-      setExamQuestionsError(`Could not load ${examCode} questions. Check your Firebase configuration and Firestore rules.`);
+      setExamQuestionsError("Could not load questions. Check your Firebase configuration and Firestore rules.");
     });
-  }, [selectedExam, sections, chapters, questionLoadRevision]);
+  }, [isAdmin, view, selectedExam, sections, chapters, questionLoadRevision]);
 
-  // Bridge approved questions from extracted papers for the active exam into the student portal question pool
+  // Bridge approved questions from extracted papers into the question pool
   useEffect(() => {
-    if (!selectedExam) return;
-    const examCode = selectedExam.toLowerCase();
-    const relevantPapers = extractedPapers.filter(
-      (p) => (p.examId || "").toLowerCase() === examCode || (p.examName || "").toLowerCase() === examCode
-    );
+    const relevantPapers = (isAdmin || view === "admin")
+      ? extractedPapers
+      : selectedExam
+      ? extractedPapers.filter(
+          (p) => (p.examId || "").toLowerCase() === selectedExam.toLowerCase() || (p.examName || "").toLowerCase() === selectedExam.toLowerCase()
+        )
+      : [];
     if (!relevantPapers.length) return;
 
     const paperQuestions: Question[] = [];
@@ -491,7 +502,7 @@ export default function App() {
     if (paperQuestions.length > 0) {
       setQuestions((current) => {
         const existingMap = new Map(current.map((q) => [q.id, q]));
-        const textSet = new Set(current.filter((q) => q.examId === selectedExam).map((q) => q.question.trim().toLowerCase()));
+        const textSet = new Set(current.map((q) => q.question.trim().toLowerCase()));
 
         let added = 0;
         for (const pq of paperQuestions) {
@@ -509,7 +520,7 @@ export default function App() {
         return current;
       });
     }
-  }, [selectedExam, extractedPapers, sections, chapters]);
+  }, [isAdmin, view, selectedExam, extractedPapers, sections, chapters]);
 
   useEffect(() => {
     localStorage.setItem("mba-dark-mode", JSON.stringify(darkMode));
@@ -945,6 +956,14 @@ export default function App() {
         setQuestions((all) => all.filter((entry) => entry.chapterId !== item.id));
         setChapters((all) => all.filter((entry) => entry.id !== item.id));
       } else {
+        const cleanId = item.id.startsWith("firestore-") ? item.id.replace("firestore-", "") : item.id;
+        if (isFirebaseConfigured && firestore && item.id.startsWith("firestore-")) {
+          try {
+            await deleteDoc(doc(firestore, "examQuestions", cleanId));
+          } catch (e) {
+            console.warn("Could not delete from Firestore:", e);
+          }
+        }
         setQuestions((all) => all.filter((entry) => entry.id !== item.id));
       }
     } catch (reason) {
