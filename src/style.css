@@ -1,4 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@tailwind components;
+@tailwind utilities;
 
 :root{font-family:"DM Sans",sans-serif;color:#20243a;background:#f7f8fc;font-synthesis:none;text-rendering:optimizeLegibility;font-weight:400;font-size:14px;font-optical-sizing:auto;--ink:#20243a;--muted:#858ba0;--line:#eceef4;--purple:#7565e8;--purple-dark:#6152cf;--surface:#fff;--shadow:0 10px 35px rgba(37,40,69,.045)}
 *{box-sizing:border-box}
@@ -527,75 +529,77 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .table-wrap th{font-size:10px}
 .table-wrap td{font-size:11px}
 
-/* Shared contrast-safe dark palette. */
-.app-shell.mode-dark,.login-theme.mode-dark{background:#111522;color:#e5e8f2}
-.mode-dark .sidebar,.mode-dark .topbar,.mode-dark .login-page{background:#171c2b;color:#e5e8f2}
-.mode-dark .sidebar{border-color:#2a3041}
-.mode-dark .topbar{background:rgba(23,28,43,.94);border-color:#2a3041}
-.mode-dark .main-area,.mode-dark .content-area{background:#111522}
+/* Shared contrast-safe premium dark palette (Linear/Vercel inspired). */
+.app-shell.mode-dark,.login-theme.mode-dark{background:#090d16;color:#f1f5f9}
+.mode-dark .sidebar,.mode-dark .topbar,.mode-dark .login-page{background:#0f1523;color:#f1f5f9}
+.mode-dark .sidebar{border-color:#1e293b}
+.mode-dark .topbar{background:rgba(15,21,35,.88);border-color:#1e293b;backdrop-filter:blur(16px)}
+.mode-dark .main-area,.mode-dark .content-area{background:#090d16}
 .mode-dark .breadcrumb b,.mode-dark .brand b,.mode-dark .section-card h3,.mode-dark .chapter-card h3,
 .mode-dark .question-card h2,.mode-dark .stat-card b,.mode-dark .page-title h1,.mode-dark .random-intro h1,
 .mode-dark .result-hero h1,.mode-dark .exam-stat-values b,.mode-dark .exam-stat-card>div:nth-child(2)>b,
 .mode-dark .setup-header h2,.mode-dark .section-heading h2,.mode-dark .status-row b,.mode-dark .question-cell,
 .mode-dark .settings-card h2,.mode-dark .visibility-list b,.mode-dark .account-choice>h1,
-.mode-dark .login-form-card>h1,.mode-dark .account-choice-title{color:#edf0fa}
+.mode-dark .login-form-card>h1,.mode-dark .account-choice-title{color:#f8fafc}
 .mode-dark .sidebar-tip,.mode-dark .section-card,.mode-dark .chapter-card,.mode-dark .stat-card,
 .mode-dark .question-card,.mode-dark .random-setup-card,.mode-dark .result-card,.mode-dark .progress-card,
 .mode-dark .status-panel,.mode-dark .status-list,.mode-dark .progress-exams>article,.mode-dark .question-stat-panel,
 .mode-dark .settings-card,.mode-dark .table-wrap,.mode-dark .exam-stat-card,.mode-dark .account-choice-card,
 .mode-dark .login-form-card,.mode-dark .modal-card,.mode-dark .settings-page .settings-card,
 .mode-dark .tip-banner,.mode-dark .exam-progress-card,.mode-dark .wrong-row,.mode-dark .status-row,
-.mode-dark .search-box,.mode-dark .random-setup-card,.mode-dark .quiz-summary{background:#1b2131;border-color:#30384b;color:#e0e4ef}
-.mode-dark .sidebar-tip{background:linear-gradient(145deg,#211f38,#1b2131)}
-.mode-dark .tip-banner{background:linear-gradient(95deg,#211f38,#1b2131)}
-.mode-dark .exam-card{background:#1b2131;border-color:#30384b;color:#e7eaf4}
-.mode-dark .exam-card-shape{background:#252b40}
-.mode-dark .exam-blue .exam-card-shape{background:#233149}
-.mode-dark .exam-green .exam-card-shape{background:#20382f}
-.mode-dark .exam-orange .exam-card-shape{background:#3a3027}
-.mode-dark .exam-card p,.mode-dark .exam-card-bottom{color:#b6bdd0}
-.mode-dark .exam-card-icon{background:#302c52;color:#d0caff}
-.mode-dark .exam-blue .exam-card-icon{background:#24334a;color:#a8c8ff}
-.mode-dark .exam-green .exam-card-icon{background:#20382f;color:#9fe0c1}
-.mode-dark .exam-orange .exam-card-icon{background:#3a3027;color:#f1c48f}
+.mode-dark .search-box,.mode-dark .random-setup-card,.mode-dark .quiz-summary,.mode-dark .past-paper-card{background:#121826;border-color:#1e293b;color:#e2e8f0;box-shadow:0 4px 20px -2px rgba(0,0,0,.35)}
+.mode-dark .section-card:hover,.mode-dark .stat-card:hover,.mode-dark .past-paper-card:hover{background:#172033;border-color:rgba(99,102,241,.35);box-shadow:0 12px 30px -5px rgba(0,0,0,.5),0 0 20px -4px rgba(99,102,241,.2)}
+.mode-dark .sidebar-tip{background:linear-gradient(145deg,#161e31,#101624);border-color:#243048}
+.mode-dark .tip-banner{background:linear-gradient(95deg,#161f33,#101625);border-color:#222e47}
+.mode-dark .exam-card{background:#121826;border-color:#1e293b;color:#f1f5f9;box-shadow:0 10px 30px -5px rgba(0,0,0,.4)}
+.mode-dark .exam-card:hover{border-color:rgba(99,102,241,.4);box-shadow:0 16px 36px -6px rgba(0,0,0,.5),0 0 25px -5px rgba(99,102,241,.25)}
+.mode-dark .exam-card-shape{background:#1c2538}
+.mode-dark .exam-blue .exam-card-shape{background:#172944}
+.mode-dark .exam-green .exam-card-shape{background:#132d25}
+.mode-dark .exam-orange .exam-card-shape{background:#30251c}
+.mode-dark .exam-card p,.mode-dark .exam-card-bottom{color:#94a3b8}
+.mode-dark .exam-card-icon{background:#1f283d;color:#a5b4fc}
+.mode-dark .exam-blue .exam-card-icon{background:#172844;color:#93c5fd}
+.mode-dark .exam-green .exam-card-icon{background:#132e25;color:#6ee7b7}
+.mode-dark .exam-orange .exam-card-icon{background:#332619;color:#fcd34d}
 .mode-dark .brand small,.mode-dark .side-label,.mode-dark .exam-switcher>span,.mode-dark .user-info small,
 .mode-dark .breadcrumb,.mode-dark .exam-stat-card small,.mode-dark .exam-stat-values span,
 .mode-dark .section-card p,.mode-dark .chapter-card>p,.mode-dark .page-title p,.mode-dark .section-heading p,
 .mode-dark .account-choice>p,.mode-dark .login-form-card>p,.mode-dark .settings-card>p,
-.mode-dark .form-hint,.mode-dark .back-link,.mode-dark .table-empty,.mode-dark .tip-banner p{color:#aab2c5}
-.mode-dark .nav-link,.mode-dark .exam-switcher>button,.mode-dark .text-button{color:#b1b8ca}
-.mode-dark .nav-link:hover,.mode-dark .user-box>button:hover{background:#252b3e;color:#d0cbff}
-.mode-dark .nav-active{background:#302c52;color:#d0caff}
-.mode-dark .admin-logout,.mode-dark .user-box,.mode-dark .exam-switcher,.mode-dark .admin-logout{border-color:#30384b}
-.mode-dark .header-search,.mode-dark .header-search input,.mode-dark .search-box input{background:#202638;color:#e6e9f2;border-color:#343c50}
-.mode-dark .header-search input::placeholder,.mode-dark .search-box input::placeholder{color:#838da4}
+.mode-dark .form-hint,.mode-dark .back-link,.mode-dark .table-empty,.mode-dark .tip-banner p{color:#94a3b8}
+.mode-dark .nav-link,.mode-dark .exam-switcher>button,.mode-dark .text-button{color:#94a3b8}
+.mode-dark .nav-link:hover,.mode-dark .user-box>button:hover{background:#182236;color:#e0e7ff}
+.mode-dark .nav-active{background:#1e293b;color:#a5b4fc;border-left:3px solid #6366f1;box-shadow:inset 0 0 16px rgba(99,102,241,.12)}
+.mode-dark .admin-logout,.mode-dark .user-box,.mode-dark .exam-switcher{border-color:#1e293b}
+.mode-dark .header-search,.mode-dark .header-search input,.mode-dark .search-box input{background:#141d2e;color:#f1f5f9;border-color:#222d42}
+.mode-dark .header-search input::placeholder,.mode-dark .search-box input::placeholder{color:#64748b}
 .mode-dark .icon-button,.mode-dark .theme-toggle,.mode-dark .button-outline,.mode-dark .button-quiet,
 .mode-dark .answer-option,.mode-dark .count-options button,.mode-dark .form-label input,
 .mode-dark .form-label select,.mode-dark .form-label textarea,.mode-dark .filters select,
-.mode-dark .student-actions button{background:#22293a;border-color:#374055;color:#e1e5f0}
-.mode-dark .answer-option:not(:disabled):hover,.mode-dark .count-options button.count-selected{background:#302c52;border-color:#6f64ba;color:#f1efff}
-.mode-dark .answer-letter{background:#252c3d;border-color:#424a5e;color:#c3cada}
-.mode-dark .answer-correct{background:#17342c;border-color:#397c64;color:#b8eed8}
-.mode-dark .answer-wrong{background:#392526;border-color:#8c4e4e;color:#ffd1cc}
-.mode-dark .form-label input::placeholder,.mode-dark .form-label textarea::placeholder{color:#8790a6}
-.mode-dark .table-wrap th{background:#22293a;color:#aeb6c9}
-.mode-dark .table-wrap td{border-color:#30384b;color:#c1c7d6}
-.mode-dark .table-wrap td b{color:#edf0fa}
-.mode-dark .student-actions button:hover{background:#302c52;color:#d0caff}
+.mode-dark .student-actions button{background:#151d2c;border-color:#243044;color:#e2e8f0}
+.mode-dark .answer-option:not(:disabled):hover,.mode-dark .count-options button.count-selected{background:#1b253b;border-color:#6366f1;color:#f8fafc;box-shadow:0 0 15px -3px rgba(99,102,241,.25)}
+.mode-dark .answer-letter{background:#1c2638;border-color:#2f3d54;color:#cbd5e1}
+.mode-dark .answer-correct{background:#0e2e23;border-color:#10b981;color:#a7f3d0}
+.mode-dark .answer-wrong{background:#36191b;border-color:#ef4444;color:#fecaca}
+.mode-dark .form-label input::placeholder,.mode-dark .form-label textarea::placeholder{color:#64748b}
+.mode-dark .table-wrap th{background:#151d2c;color:#94a3b8;border-bottom:1px solid #1e293b}
+.mode-dark .table-wrap td{border-color:#1e293b;color:#cbd5e1}
+.mode-dark .table-wrap td b{color:#f8fafc}
+.mode-dark .student-actions button:hover{background:#1e2a40;color:#c7d2fe}
 .mode-dark .section-progress,.mode-dark .question-number,.mode-dark .quiz-topline>span,
-.mode-dark .quiz-footnote,.mode-dark .random-intro p,.mode-dark .status-row small{color:#aab2c5}
+.mode-dark .quiz-footnote,.mode-dark .random-intro p,.mode-dark .status-row small{color:#94a3b8}
 .mode-dark .progress-track,.mode-dark .progress-line,.mode-dark .quiz-progress,
-.mode-dark .count-options button,.mode-dark .quiz-summary{border-color:#343c50}
-.mode-dark .progress-track{background:#30384b}
-.mode-dark .quiz-summary{background:#202638}
+.mode-dark .count-options button,.mode-dark .quiz-summary{border-color:#243044}
+.mode-dark .progress-track{background:#1e293b}
+.mode-dark .quiz-summary{background:#141d2e}
 .mode-dark .exam-stat-values,.mode-dark .visibility-list>label,.mode-dark .modal-actions,
-.mode-dark .login-footer,.mode-dark .admin-login-security{border-color:#30384b}
-.mode-dark .visibility-list>label{background:#202638}
-.mode-dark .wrong-list,.mode-dark .empty-state{background:#1b2131;border-color:#30384b;color:#c1c7d6}
-.mode-dark .review-row{border-color:#30384b}
-.mode-dark .review-row h3,.mode-dark .wrong-row h3{color:#e6e9f2}
-.mode-dark .review-row p,.mode-dark .review-row small,.mode-dark .wrong-row p{color:#aab2c5}
-.mode-dark .notice{background:#302c52;color:#d0caff}
+.mode-dark .login-footer,.mode-dark .admin-login-security{border-color:#1e293b}
+.mode-dark .visibility-list>label{background:#141d2e}
+.mode-dark .wrong-list,.mode-dark .empty-state{background:#121826;border-color:#1e293b;color:#cbd5e1}
+.mode-dark .review-row{border-color:#1e293b}
+.mode-dark .review-row h3,.mode-dark .wrong-row h3{color:#f1f5f9}
+.mode-dark .review-row p,.mode-dark .review-row small,.mode-dark .wrong-row p{color:#94a3b8}
+.mode-dark .notice{background:#1e293b;color:#a5b4fc}
 .mode-dark .admin-welcome{background:#17342c;color:#b8eed8}
 .mode-dark .feedback-correct{background:#17342c;color:#b8eed8}
 .mode-dark .feedback-wrong{background:#392526;color:#ffd1cc}
@@ -2719,3 +2723,100 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
   border-top: 1px solid var(--border);
   background: var(--surface-soft, rgba(0, 0, 0, 0.02));
 }
+
+/* ==========================================================================
+   Modern SaaS Polish & Empty States (Linear/Vercel Aesthetic)
+   ========================================================================== */
+.empty-state-modern {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 48px 24px;
+  border: 1px dashed var(--line, #e2e8f0);
+  border-radius: 16px;
+  background: var(--surface, #ffffff);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03);
+}
+
+.mode-dark .empty-state-modern {
+  border-color: #1e293b;
+  background: #101625;
+}
+
+.empty-state-icon-glow {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(129, 140, 248, 0.04));
+  color: #6366f1;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  margin-bottom: 16px;
+  box-shadow: 0 0 24px -4px rgba(99, 102, 241, 0.25);
+}
+
+.empty-state-modern h3 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: var(--ink, #1e293b);
+}
+
+.mode-dark .empty-state-modern h3 {
+  color: #f1f5f9;
+}
+
+.empty-state-modern p {
+  font-size: 0.88rem;
+  color: var(--muted, #64748b);
+  max-width: 420px;
+  margin: 0 0 20px;
+  line-height: 1.6;
+}
+
+.mode-dark .empty-state-modern p {
+  color: #94a3b8;
+}
+
+/* Modern Sleek Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+.mode-dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.mode-dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Focus and input elevation */
+input:focus, textarea:focus, select:focus {
+  border-color: #6366f1 !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+}
+
+/* Smooth selection and transitions */
+::selection {
+  background: rgba(99, 102, 241, 0.25);
+  color: inherit;
+}
+

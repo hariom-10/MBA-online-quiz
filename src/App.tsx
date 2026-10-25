@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity, ArrowLeft, ArrowRight, Award, BookOpen, Check, ChevronDown, CircleHelp, ClipboardList,
-  Clock3, Filter, Flag, GraduationCap, Image as ImageIcon, Key, LayoutDashboard, LogIn, LogOut, Menu, Moon, Search, ShieldCheck, Sun,
+  Clock3, Eye, EyeOff, Filter, Flag, GraduationCap, Image as ImageIcon, Key, LayoutDashboard, LogIn, LogOut, Menu, Moon, Search, ShieldCheck, Sun,
   Shuffle, Sparkles, Target, Trash2, UserRound, X, Zap, Users, Settings, Layers3, FileText,
 } from "lucide-react";
 import { initialChapters, initialExams, initialQuestions, initialSections } from "./data";
@@ -12,6 +13,7 @@ import { MathContent, MathPreview, QuestionGraphViewer } from "./MathContent";
 import { AiPdfImport } from "./AiPdfImport";
 import { ApiKeyManager } from "./ApiKeyManager";
 import { CbtMockExam } from "./CbtMockExam";
+import { PageTransition } from "./components/ui";
 import { firestore, isFirebaseConfigured } from "./firebase";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import {
@@ -934,7 +936,11 @@ export default function App() {
             const finalQuestions = paperSpecificQuestions.length > 0 ? paperSpecificQuestions : examPool.slice(0, paper.totalQuestions || 66);
 
             return (
-              <article key={paper.id} className="past-paper-card">
+              <motion.article
+                key={paper.id}
+                whileHover={{ y: -3, transition: { duration: 0.16 } }}
+                className="past-paper-card"
+              >
                 <div>
                   <div className="past-paper-card-top">
                     <span className="past-paper-exam-badge">{paper.examName || activeExam.name} CBT PATTERN</span>
@@ -955,11 +961,15 @@ export default function App() {
                 >
                   <Zap size={15} /> Launch CBT Mock Test
                 </button>
-              </article>
+              </motion.article>
             );
           })}
 
-          <article className="past-paper-card" style={{ borderStyle: "dashed" }}>
+          <motion.article
+            whileHover={{ y: -3, transition: { duration: 0.16 } }}
+            className="past-paper-card"
+            style={{ borderStyle: "dashed" }}
+          >
             <div>
               <div className="past-paper-card-top">
                 <span className="past-paper-exam-badge" style={{ background: "#fef3c7", color: "#b45309", borderColor: "#fde68a" }}>
@@ -1001,7 +1011,7 @@ export default function App() {
             >
               <Zap size={15} /> Start {activeExam.name} Full Mock Test
             </button>
-          </article>
+          </motion.article>
         </div>
       </section>
     );
@@ -1010,68 +1020,186 @@ export default function App() {
   function renderDashboard() {
     if (!activeExam) return null;
     const stats = currentAttemptStats(activeExam.id);
-    return <div className="page-stack">
-      <section className={`hero hero-${activeExam.color}`}>
-        <div>
-          <span className="eyebrow"><Sparkles size={14} /> YOUR PREPARATION SPACE</span>
-          <h1>{activeExam.name} Preparation</h1>
-          <p>{settings.welcomeMessage}</p>
-          <button className="button button-light" onClick={() => visit("random")}><Zap size={16} /> Start a quick quiz <ArrowRight size={16} /></button>
-        </div>
-        <div className="hero-art"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="hero-icon"><GraduationCap size={78} strokeWidth={1.3} /></div><span className="art-star">✦</span><span className="art-dot" /></div>
-      </section>
-      <section className="stat-grid">
-        <StatCard icon={<BookOpen />} label="Question bank" value={stats.total} caption="questions available" tone="purple" />
-        <StatCard icon={<ClipboardList />} label="Attempted" value={stats.attempted} caption={`${stats.completion}% of question bank`} tone="blue" />
-        <StatCard icon={<Check />} label="Correct answers" value={stats.correct} caption={`${stats.wrong} incorrect`} tone="green" />
-        <StatCard icon={<Target />} label="Accuracy" value={`${stats.accuracy}%`} caption="on attempted questions" tone="orange" />
-      </section>
-      {renderPastPapersSection()}
-      <section className="section-heading"><div><h2>Choose a section</h2><p>Pick a subject to explore its chapters and practice.</p></div><span className="soft-badge">{examSections.length} sections</span></section>
-      {examQuestionsLoading && <div className="loading-state" role="status"><div className="spinner" /> Loading {activeExam.name} questions from Firebase…</div>}
-      {!!examQuestionsError && <div className="empty-state"><div><CircleHelp size={26} /></div><p>{examQuestionsError}</p><button className="button button-outline" onClick={() => setQuestionLoadRevision((revision) => revision + 1)}>Retry loading</button></div>}
-      {!examQuestionsLoading && !examQuestionsError && ["cat", "cmat", "xat"].includes(activeExam.id) && examQuestions.length === 0 && <EmptyState text={`No ${activeExam.name} questions were found in the Firestore examQuestions collection yet.`} />}
-      {(!["cat", "cmat", "xat"].includes(activeExam.id) || (!examQuestionsLoading && !examQuestionsError && examQuestions.length > 0)) && <section className="section-grid">
-        {examSections.map((section, index) => {
-          const list = examQuestions.filter((question) => question.sectionId === section.id);
-          const done = list.filter((question) => byId.has(question.id)).length;
-          const progress = percent(done, list.length);
-          const chapterCount = chapters.filter((chapter) => chapter.sectionId === section.id).length;
-          return <button key={section.id} className="section-card" onClick={() => setSectionId(section.id)}>
-            <div className={`section-icon section-icon-${index % 4}`}><SectionIcon index={index} /></div>
-            <div className="section-card-content"><span className="section-count">SECTION {String(index + 1).padStart(2, "0")}</span><h3>{section.name}</h3><p>{chapterCount} chapters <span>·</span> {list.length} {list.length === 1 ? "question" : "questions"}</p></div>
-            <ArrowRight className="section-arrow" size={18} />
-            <div className="progress-line"><span style={{ width: `${progress}%` }} /></div>
-            <div className="section-progress"><span>Section progress</span><b>{progress}%</b></div>
-          </button>;
-        })}
-      </section>}
-      {search.trim() && <section className="search-results-panel">
-        <div className="section-heading"><div><h2>Question search</h2><p>Matching questions in {activeExam.name}.</p></div><span className="soft-badge">{examQuestions.filter((question) => question.question.toLowerCase().includes(search.trim().toLowerCase())).length} matches</span></div>
-        <div className="status-list">{examQuestions.filter((question) => question.question.toLowerCase().includes(search.trim().toLowerCase())).map((question) => <button className="search-result-row" key={question.id} onClick={() => { setSectionId(question.sectionId); beginQuiz([question], `${activeExam.name} · Search practice`, "practice"); }}><div><b><MathContent text={question.question} /></b><small>{sections.find((item) => item.id === question.sectionId)?.name} · {chapters.find((item) => item.id === question.chapterId)?.name}</small></div><ArrowRight size={16} /></button>)}</div>
-      </section>}
-      <section className="tip-banner"><div className="tip-icon"><Sparkles size={18} /></div><div><b>Small steps add up.</b><p>Practice a few questions daily to build a consistent preparation habit.</p></div><button className="text-button" onClick={() => visit("progress")}>View my progress <ArrowRight size={15} /></button></section>
-    </div>;
+    return (
+      <PageTransition className="page-stack">
+        <section className={`hero hero-${activeExam.color}`}>
+          <div>
+            <span className="eyebrow"><Sparkles size={14} /> YOUR PREPARATION SPACE</span>
+            <h1>{activeExam.name} Preparation</h1>
+            <p>{settings.welcomeMessage}</p>
+            <button className="button button-light" onClick={() => visit("random")}>
+              <Zap size={16} /> Start a quick quiz <ArrowRight size={16} />
+            </button>
+          </div>
+          <div className="hero-art">
+            <div className="orbit orbit-one" />
+            <div className="orbit orbit-two" />
+            <div className="hero-icon"><GraduationCap size={78} strokeWidth={1.3} /></div>
+            <span className="art-star">✦</span>
+            <span className="art-dot" />
+          </div>
+        </section>
+
+        <section className="stat-grid">
+          <StatCard icon={<BookOpen />} label="Question bank" value={stats.total} caption="questions available" tone="purple" />
+          <StatCard icon={<ClipboardList />} label="Attempted" value={stats.attempted} caption={`${stats.completion}% of question bank`} tone="blue" />
+          <StatCard icon={<Check />} label="Correct answers" value={stats.correct} caption={`${stats.wrong} incorrect`} tone="green" />
+          <StatCard icon={<Target />} label="Accuracy" value={`${stats.accuracy}%`} caption="on attempted questions" tone="orange" />
+        </section>
+
+        {renderPastPapersSection()}
+
+        <section className="section-heading">
+          <div>
+            <h2>Choose a section</h2>
+            <p>Pick a subject to explore its chapters and practice.</p>
+          </div>
+          <span className="soft-badge">{examSections.length} sections</span>
+        </section>
+
+        {examQuestionsLoading && (
+          <div className="loading-state" role="status">
+            <div className="spinner" /> Loading {activeExam.name} questions from Firebase…
+          </div>
+        )}
+        {!!examQuestionsError && (
+          <div className="empty-state">
+            <div><CircleHelp size={26} /></div>
+            <p>{examQuestionsError}</p>
+            <button className="button button-outline" onClick={() => setQuestionLoadRevision((revision) => revision + 1)}>Retry loading</button>
+          </div>
+        )}
+        {!examQuestionsLoading && !examQuestionsError && ["cat", "cmat", "xat"].includes(activeExam.id) && examQuestions.length === 0 && (
+          <EmptyState text={`No ${activeExam.name} questions were found in the Firestore examQuestions collection yet.`} />
+        )}
+
+        {(!["cat", "cmat", "xat"].includes(activeExam.id) || (!examQuestionsLoading && !examQuestionsError && examQuestions.length > 0)) && (
+          <section className="section-grid">
+            {examSections.map((section, index) => {
+              const list = examQuestions.filter((question) => question.sectionId === section.id);
+              const done = list.filter((question) => byId.has(question.id)).length;
+              const progress = percent(done, list.length);
+              const chapterCount = chapters.filter((chapter) => chapter.sectionId === section.id).length;
+              return (
+                <motion.button
+                  key={section.id}
+                  initial={{ opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.28, delay: index * 0.05 }}
+                  whileHover={{ y: -3, transition: { duration: 0.15 } }}
+                  whileTap={{ scale: 0.99 }}
+                  className="section-card text-left"
+                  onClick={() => setSectionId(section.id)}
+                >
+                  <div className={`section-icon section-icon-${index % 4}`}><SectionIcon index={index} /></div>
+                  <div className="section-card-content">
+                    <span className="section-count">SECTION {String(index + 1).padStart(2, "0")}</span>
+                    <h3>{section.name}</h3>
+                    <p>{chapterCount} chapters <span>·</span> {list.length} {list.length === 1 ? "question" : "questions"}</p>
+                  </div>
+                  <ArrowRight className="section-arrow" size={18} />
+                  <div className="progress-line"><span style={{ width: `${progress}%` }} /></div>
+                  <div className="section-progress"><span>Section progress</span><b>{progress}%</b></div>
+                </motion.button>
+              );
+            })}
+          </section>
+        )}
+
+        {search.trim() && (
+          <section className="search-results-panel">
+            <div className="section-heading">
+              <div>
+                <h2>Question search</h2>
+                <p>Matching questions in {activeExam.name}.</p>
+              </div>
+              <span className="soft-badge">
+                {examQuestions.filter((question) => question.question.toLowerCase().includes(search.trim().toLowerCase())).length} matches
+              </span>
+            </div>
+            <div className="status-list">
+              {examQuestions
+                .filter((question) => question.question.toLowerCase().includes(search.trim().toLowerCase()))
+                .map((question) => (
+                  <button
+                    className="search-result-row"
+                    key={question.id}
+                    onClick={() => {
+                      setSectionId(question.sectionId);
+                      beginQuiz([question], `${activeExam.name} · Search practice`, "practice");
+                    }}
+                  >
+                    <div>
+                      <b><MathContent text={question.question} /></b>
+                      <small>{sections.find((item) => item.id === question.sectionId)?.name} · {chapters.find((item) => item.id === question.chapterId)?.name}</small>
+                    </div>
+                    <ArrowRight size={16} />
+                  </button>
+                ))}
+            </div>
+          </section>
+        )}
+
+        <section className="tip-banner">
+          <div className="tip-icon"><Sparkles size={18} /></div>
+          <div>
+            <b>Small steps add up.</b>
+            <p>Practice a few questions daily to build a consistent preparation habit.</p>
+          </div>
+          <button className="text-button" onClick={() => visit("progress")}>
+            View my progress <ArrowRight size={15} />
+          </button>
+        </section>
+      </PageTransition>
+    );
   }
 
   function renderSectionPicker() {
     const section = sections.find((item) => item.id === sectionId);
     if (!section) return renderDashboard();
     const chapterRows = chapters.filter((chapter) => chapter.sectionId === section.id);
-    return <div className="page-stack">
-      <button className="back-link" onClick={() => setSectionId(null)}><ArrowLeft size={16} /> Back to {activeExam?.name} dashboard</button>
-      <section className="section-heading page-title"><div><span className="eyebrow">SECTION</span><h1>{section.name}</h1><p>Choose a chapter to begin practicing.</p></div></section>
-      <div className="chapter-grid">{chapterRows.map((chapter, index) => {
-        const pool = questions.filter((question) => question.chapterId === chapter.id);
-        const attempted = pool.filter((question) => byId.has(question.id)).length;
-        return <article className="chapter-card" key={chapter.id}>
-          <div className="chapter-top"><div className={`chapter-icon chapter-icon-${index % 4}`}><BookOpen size={20} /></div><span className="soft-badge">{pool.length} {pool.length === 1 ? "question" : "questions"}</span></div>
-          <h3>{chapter.name}</h3><p>{attempted} of {pool.length} attempted · {percent(attempted, pool.length)}% complete</p>
-          <div className="progress-track"><span style={{ width: `${percent(attempted, pool.length)}%` }} /></div>
-          <button className="button button-primary button-full" onClick={() => startChapter(section, chapter)}>Start practice <ArrowRight size={16} /></button>
-        </article>;
-      })}{!chapterRows.length && <EmptyState text="No chapters have been added for this section yet." />}</div>
-    </div>;
+    return (
+      <PageTransition className="page-stack">
+        <button className="back-link" onClick={() => setSectionId(null)}>
+          <ArrowLeft size={16} /> Back to {activeExam?.name} dashboard
+        </button>
+        <section className="section-heading page-title">
+          <div>
+            <span className="eyebrow">SECTION</span>
+            <h1>{section.name}</h1>
+            <p>Choose a chapter to begin practicing.</p>
+          </div>
+        </section>
+        <div className="chapter-grid">
+          {chapterRows.map((chapter, index) => {
+            const pool = questions.filter((question) => question.chapterId === chapter.id);
+            const attempted = pool.filter((question) => byId.has(question.id)).length;
+            return (
+              <motion.article
+                className="chapter-card"
+                key={chapter.id}
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.28, delay: index * 0.04 }}
+                whileHover={{ y: -3, transition: { duration: 0.15 } }}
+              >
+                <div className="chapter-top">
+                  <div className={`chapter-icon chapter-icon-${index % 4}`}><BookOpen size={20} /></div>
+                  <span className="soft-badge">{pool.length} {pool.length === 1 ? "question" : "questions"}</span>
+                </div>
+                <h3>{chapter.name}</h3>
+                <p>{attempted} of {pool.length} attempted · {percent(attempted, pool.length)}% complete</p>
+                <div className="progress-track"><span style={{ width: `${percent(attempted, pool.length)}%` }} /></div>
+                <button className="button button-primary button-full" onClick={() => startChapter(section, chapter)}>
+                  Start practice <ArrowRight size={16} />
+                </button>
+              </motion.article>
+            );
+          })}
+          {!chapterRows.length && <EmptyState text="No chapters have been added for this section yet." />}
+        </div>
+      </PageTransition>
+    );
   }
 
   function renderQuiz() {
@@ -1087,37 +1215,92 @@ export default function App() {
     const countDone = Object.keys(quiz.answers).length;
     const section = sections.find((item) => item.id === q.sectionId);
     return <div className="quiz-layout">
-      <div className="quiz-topline"><button className="back-link" onClick={() => { setQuiz(null); setView("dashboard"); }}><ArrowLeft size={16} /> Exit practice</button><span><Clock3 size={15} /> {quiz.title}</span></div>
-      <div className="quiz-progress"><div><span>QUESTION {quiz.index + 1} <i>of {quiz.questions.length}</i></span><b>{percent(quiz.index + 1, quiz.questions.length)}%</b></div><div className="progress-track"><span style={{ width: `${percent(quiz.index + 1, quiz.questions.length)}%` }} /></div></div>
-      <article className="question-card">
-        <div className="question-meta"><span className="soft-badge">{activeExam?.name ?? exams.find((exam) => exam.id === q.examId)?.name} · {section?.name}</span><span className={`difficulty difficulty-${q.difficulty.toLowerCase()}`}>{q.difficulty}</span></div>
-        <p className="question-number">Question {quiz.index + 1}</p><h2><MathContent text={q.question} /></h2>
+      <div className="quiz-topline">
+        <button className="back-link" onClick={() => { setQuiz(null); setView("dashboard"); }}>
+          <ArrowLeft size={16} /> Exit practice
+        </button>
+        <span className="flex items-center gap-1.5"><Clock3 size={15} /> {quiz.title}</span>
+      </div>
+      <div className="quiz-progress">
+        <div>
+          <span>QUESTION {quiz.index + 1} <i>of {quiz.questions.length}</i></span>
+          <b>{percent(quiz.index + 1, quiz.questions.length)}%</b>
+        </div>
+        <div className="progress-track">
+          <motion.span
+            initial={{ width: 0 }}
+            animate={{ width: `${percent(quiz.index + 1, quiz.questions.length)}%` }}
+            transition={{ duration: 0.35, ease: "easeOut" }}
+          />
+        </div>
+      </div>
+      <motion.article
+        key={q.id}
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10 }}
+        transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+        className="question-card"
+      >
+        <div className="question-meta">
+          <span className="soft-badge">{activeExam?.name ?? exams.find((exam) => exam.id === q.examId)?.name} · {section?.name}</span>
+          <span className={`difficulty difficulty-${q.difficulty.toLowerCase()}`}>{q.difficulty}</span>
+        </div>
+        <p className="question-number">Question {quiz.index + 1}</p>
+        <h2><MathContent text={q.question} /></h2>
         {q.imageUrl && <QuestionGraphViewer imageUrl={q.imageUrl} alt={q.imageAlt || `Question ${quiz.index + 1} Diagram`} />}
         {q.answerMode === "text" ? <div className="text-answer-entry">
           <label htmlFor="typed-answer">Your answer</label>
-          <div><input id="typed-answer" value={typedAnswer} onChange={(event) => setTypedAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && typedAnswer.trim() && !answered) void chooseAnswer(typedAnswer); }} disabled={answered || savingQuestionId === q.id} placeholder="Type your answer" />
-            {!answered && <button className="button button-primary" disabled={!typedAnswer.trim() || savingQuestionId === q.id} onClick={() => void chooseAnswer(typedAnswer)}>Submit answer <ArrowRight size={16} /></button>}</div>
+          <div>
+            <input
+              id="typed-answer"
+              value={typedAnswer}
+              onChange={(event) => setTypedAnswer(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter" && typedAnswer.trim() && !answered) void chooseAnswer(typedAnswer); }}
+              disabled={answered || savingQuestionId === q.id}
+              placeholder="Type your numerical or text answer"
+            />
+            {!answered && <button className="button button-primary" disabled={!typedAnswer.trim() || savingQuestionId === q.id} onClick={() => void chooseAnswer(typedAnswer)}>Submit answer <ArrowRight size={16} /></button>}
+          </div>
         </div> : <div className="answer-list">{answerOptions.map((key) => {
           const isCorrect = key === q.correctAnswer;
           const isSelected = key === selected;
           const stateClass = answered && isCorrect ? "answer-correct" : answered && isSelected ? "answer-wrong" : "";
           const pending = savingQuestionId === q.id;
-          return <button key={key} className={`answer-option ${stateClass} ${answered || pending ? "answer-disabled" : ""}`} disabled={answered || pending} onClick={() => void chooseAnswer(key)}>
-            <span className="answer-letter">{answered && isCorrect ? <Check size={17} /> : key}</span><span><MathContent text={q.options[key]} /></span>
-            {answered && isCorrect && <span className="answer-mark">Correct answer</span>}
-            {answered && isSelected && !isCorrect && <span className="answer-mark">Your answer</span>}
-          </button>;
+          return (
+            <motion.button
+              key={key}
+              whileHover={!answered && !pending ? { y: -2, transition: { duration: 0.12 } } : undefined}
+              whileTap={!answered && !pending ? { scale: 0.99 } : undefined}
+              className={`answer-option group ${stateClass} ${answered || pending ? "answer-disabled" : ""}`}
+              disabled={answered || pending}
+              onClick={() => void chooseAnswer(key)}
+            >
+              <span className="answer-letter">{answered && isCorrect ? <Check size={17} /> : key}</span>
+              <span><MathContent text={q.options[key]} /></span>
+              {answered && isCorrect && <span className="answer-mark">Correct answer</span>}
+              {answered && isSelected && !isCorrect && <span className="answer-mark">Your answer</span>}
+            </motion.button>
+          );
         })}</div>}
-        {answered && <div className={`feedback ${answeredCorrectly ? "feedback-correct" : "feedback-wrong"}`}>
-          <b>{answeredCorrectly ? "✓  Correct answer!" : "✕  Not quite — that's incorrect."}</b>
-          <p><strong>Correct answer: {q.correctAnswer}</strong></p>
-          {q.explanation && <MathContent className="solution-content" text={q.explanation} />}
-        </div>}
-        <div className="quiz-controls">{!answered && <button className="text-button skip-button" disabled={savingQuestionId === q.id} onClick={() => advance(true)}>Skip question</button>}
+        {answered && (
+          <motion.div
+            initial={{ opacity: 0, height: 0, y: 8 }}
+            animate={{ opacity: 1, height: "auto", y: 0 }}
+            transition={{ duration: 0.28, ease: "easeOut" }}
+            className={`feedback ${answeredCorrectly ? "feedback-correct" : "feedback-wrong"}`}
+          >
+            <b>{answeredCorrectly ? "✓  Correct answer!" : "✕  Not quite — that's incorrect."}</b>
+            <p><strong>Correct answer: {q.correctAnswer}</strong></p>
+            {q.explanation && <MathContent className="solution-content" text={q.explanation} />}
+          </motion.div>
+        )}
+        <div className="quiz-controls">
+          {!answered && <button className="text-button skip-button" disabled={savingQuestionId === q.id} onClick={() => advance(true)}>Skip question</button>}
           <button className="button button-primary next-button" disabled={!answered && countDone <= quiz.index} onClick={() => advance()}>{quiz.index === quiz.questions.length - 1 ? "See results" : "Next question"} <ArrowRight size={16} /></button>
         </div>
         {profile?.role === "student" && <button className="report-question-trigger" onClick={() => setReportingQuestion(q)}><Flag size={16} /> ⚠️ Report / Challenge Question</button>}
-      </article>
+      </motion.article>
       <p className="quiz-footnote"><ShieldCheck size={15} /> {savingQuestionId === q.id ? "Saving your answer…" : `Your answer is saved to your ${activeExam?.name ?? "exam"} progress as soon as you choose.`}</p>
     </div>;
   }
@@ -1154,50 +1337,148 @@ export default function App() {
   function renderWrong() {
     const wrong = questions.filter((question) => question.examId === selectedExam && byId.get(question.id)?.isCorrect === false);
     const matching = wrong.filter((question) => question.question.toLowerCase().includes(search.toLowerCase()));
-    return <div className="page-stack">
-      <section className="section-heading page-title"><div><span className="eyebrow">TARGETED PRACTICE</span><h1>Practice wrong questions</h1><p>Review your {activeExam?.name} questions that need another look.</p></div><span className="soft-badge">{wrong.length} to revisit</span></section>
-      {!matching.length ? <EmptyState icon={<Target size={26} />} text={wrong.length ? "No questions match your search." : "No incorrect answers yet. Keep practicing and any misses will show up here."} /> : <>
-        <SearchBox value={search} onChange={setSearch} placeholder="Search your incorrect questions…" />
-        <div className="wrong-list">{matching.map((question, index) => <article className="wrong-row" key={question.id}><div className="wrong-index">{String(index + 1).padStart(2, "0")}</div><div><h3><MathContent text={question.question} /></h3><p>{sections.find((item) => item.id === question.sectionId)?.name} · {chapters.find((item) => item.id === question.chapterId)?.name}</p></div><span className="status-pill status-wrong">Wrong</span></article>)}</div>
-        <button className="button button-primary" onClick={() => beginQuiz(matching, `${activeExam?.name} · Wrong questions`, "wrong")}><Target size={16} /> Practice these questions</button>
-      </>}
-    </div>;
+    return (
+      <PageTransition className="page-stack">
+        <section className="section-heading page-title">
+          <div>
+            <span className="eyebrow"><Target size={14} /> TARGETED PRACTICE</span>
+            <h1>Practice wrong questions</h1>
+            <p>Review your {activeExam?.name} questions that need another look to achieve mastery.</p>
+          </div>
+          <span className="soft-badge">{wrong.length} to revisit</span>
+        </section>
+        {!matching.length ? (
+          <EmptyState icon={<Target size={26} />} text={wrong.length ? "No questions match your search." : "No incorrect answers yet! Keep practicing and any misses will show up here."} />
+        ) : (
+          <>
+            <SearchBox value={search} onChange={setSearch} placeholder="Search your incorrect questions…" />
+            <div className="wrong-list">
+              {matching.map((question, index) => (
+                <motion.article
+                  className="wrong-row"
+                  key={question.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2, delay: index * 0.03 }}
+                >
+                  <div className="wrong-index">{String(index + 1).padStart(2, "0")}</div>
+                  <div>
+                    <h3><MathContent text={question.question} /></h3>
+                    <p>{sections.find((item) => item.id === question.sectionId)?.name} · {chapters.find((item) => item.id === question.chapterId)?.name}</p>
+                  </div>
+                  <span className="status-pill status-wrong">Wrong</span>
+                </motion.article>
+              ))}
+            </div>
+            <button className="button button-primary" onClick={() => beginQuiz(matching, `${activeExam?.name} · Wrong questions`, "wrong")}>
+              <Target size={16} /> Practice these questions
+            </button>
+          </>
+        )}
+      </PageTransition>
+    );
   }
 
   function renderProgress() {
     const statusQuestions = questions
       .filter((question) => !selectedExam || question.examId === selectedExam)
       .filter((question) => question.question.toLowerCase().includes(search.toLowerCase()));
-    return <div className="page-stack">
-      <section className="section-heading page-title"><div><span className="eyebrow">YOUR LEARNING JOURNEY</span><h1>My progress</h1><p>Your preparation stays separate for every exam.</p></div></section>
-      {!profile && <div className="notice"><UserRound size={18} /> Sign in to save progress across devices. <button className="text-button" onClick={() => setAuthOpen(true)}>Sign in</button></div>}
-      <div className="progress-exams">{exams.map((exam) => {
-        const stats = currentAttemptStats(exam.id);
-        const sectionsHere = sections.filter((section) => section.examId === exam.id);
-        return <article className="exam-progress-card" key={exam.id}>
-          <div className="exam-progress-top"><div className={`mini-exam-icon mini-${exam.color}`}>{exam.name.slice(0, 1)}</div><div><h2>{exam.name}</h2><p>{exam.tagline}</p></div><button className="text-button" onClick={() => openExam(exam.id)}>Open exam <ArrowRight size={15} /></button></div>
-          <div className="progress-stat-row"><MiniStat label="Question bank" value={stats.total} /><MiniStat label="Attempted" value={stats.attempted} /><MiniStat label="Correct" value={stats.correct} /><MiniStat label="Wrong" value={stats.wrong} /><MiniStat label="Accuracy" value={`${stats.accuracy}%`} /></div>
-          <div className="overall-progress"><div><span>Completion</span><b>{stats.completion}%</b></div><div className="progress-track"><span style={{ width: `${stats.completion}%` }} /></div></div>
-          <div className="mini-section-list">{sectionsHere.map((section) => {
-            const qlist = questions.filter((question) => question.sectionId === section.id);
-            const done = qlist.filter((question) => byId.has(question.id)).length;
-            return <div key={section.id}><div><span>{section.name}</span><b>{percent(done, qlist.length)}%</b></div><div className="progress-track"><span style={{ width: `${percent(done, qlist.length)}%` }} /></div></div>;
-          })}</div>
-        </article>;
-      })}</div>
-      <section className="status-panel">
-        <div className="section-heading"><div><h2>Question status</h2><p>{selectedExam ? `${activeExam?.name} questions` : "Status is listed separately within each exam."}</p></div><span className="soft-badge">{statusQuestions.length} {statusQuestions.length === 1 ? "question" : "questions"}</span></div>
-        <SearchBox value={search} onChange={setSearch} placeholder="Search questions…" />
-        <div className="status-list">{statusQuestions.map((question) => {
-          const attempt = byId.get(question.id);
-          const status = !attempt ? "Not attempted" : attempt.isCorrect ? "Correct" : "Wrong";
-          return <div className="status-row" key={question.id}>
-            <div><span className="status-exam">{exams.find((exam) => exam.id === question.examId)?.name}</span><b><MathContent text={question.question} /></b><small>{sections.find((section) => section.id === question.sectionId)?.name} · {chapters.find((chapter) => chapter.id === question.chapterId)?.name}</small></div>
-            <span className={`status-pill ${status === "Wrong" ? "status-wrong" : status === "Correct" ? "status-correct" : "status-not-attempted"}`}>{status}</span>
-          </div>;
-        })}{!statusQuestions.length && <p className="status-empty">No questions match your search.</p>}</div>
-      </section>
-    </div>;
+    return (
+      <PageTransition className="page-stack">
+        <section className="section-heading page-title">
+          <div>
+            <span className="eyebrow"><Activity size={14} /> YOUR LEARNING JOURNEY</span>
+            <h1>My progress &amp; analytics</h1>
+            <p>Your preparation and performance metrics stay separate for every exam.</p>
+          </div>
+        </section>
+        {!profile && (
+          <div className="notice">
+            <UserRound size={18} /> Sign in to save progress across devices.{" "}
+            <button className="text-button" onClick={() => setAuthOpen(true)}>Sign in</button>
+          </div>
+        )}
+        <div className="progress-exams">
+          {exams.map((exam, index) => {
+            const stats = currentAttemptStats(exam.id);
+            const sectionsHere = sections.filter((section) => section.examId === exam.id);
+            return (
+              <motion.article
+                className="exam-progress-card"
+                key={exam.id}
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.28, delay: index * 0.06 }}
+                whileHover={{ y: -3, transition: { duration: 0.15 } }}
+              >
+                <div className="exam-progress-top">
+                  <div className={`mini-exam-icon mini-${exam.color}`}>{exam.name.slice(0, 1)}</div>
+                  <div>
+                    <h2>{exam.name}</h2>
+                    <p>{exam.tagline}</p>
+                  </div>
+                  <button className="text-button" onClick={() => openExam(exam.id)}>
+                    Open exam <ArrowRight size={15} />
+                  </button>
+                </div>
+                <div className="progress-stat-row">
+                  <MiniStat label="Question bank" value={stats.total} />
+                  <MiniStat label="Attempted" value={stats.attempted} />
+                  <MiniStat label="Correct" value={stats.correct} />
+                  <MiniStat label="Wrong" value={stats.wrong} />
+                  <MiniStat label="Accuracy" value={`${stats.accuracy}%`} />
+                </div>
+                <div className="overall-progress">
+                  <div><span>Completion</span><b>{stats.completion}%</b></div>
+                  <div className="progress-track"><span style={{ width: `${stats.completion}%` }} /></div>
+                </div>
+                <div className="mini-section-list">
+                  {sectionsHere.map((section) => {
+                    const qlist = questions.filter((question) => question.sectionId === section.id);
+                    const done = qlist.filter((question) => byId.has(question.id)).length;
+                    return (
+                      <div key={section.id}>
+                        <div><span>{section.name}</span><b>{percent(done, qlist.length)}%</b></div>
+                        <div className="progress-track"><span style={{ width: `${percent(done, qlist.length)}%` }} /></div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </motion.article>
+            );
+          })}
+        </div>
+        <section className="status-panel">
+          <div className="section-heading">
+            <div>
+              <h2>Question status</h2>
+              <p>{selectedExam ? `${activeExam?.name} questions` : "Status is listed separately within each exam."}</p>
+            </div>
+            <span className="soft-badge">{statusQuestions.length} {statusQuestions.length === 1 ? "question" : "questions"}</span>
+          </div>
+          <SearchBox value={search} onChange={setSearch} placeholder="Search questions…" />
+          <div className="status-list">
+            {statusQuestions.map((question) => {
+              const attempt = byId.get(question.id);
+              const status = !attempt ? "Not attempted" : attempt.isCorrect ? "Correct" : "Wrong";
+              return (
+                <div className="status-row" key={question.id}>
+                  <div>
+                    <span className="status-exam">{exams.find((exam) => exam.id === question.examId)?.name}</span>
+                    <b><MathContent text={question.question} /></b>
+                    <small>{sections.find((section) => section.id === question.sectionId)?.name} · {chapters.find((chapter) => chapter.id === question.chapterId)?.name}</small>
+                  </div>
+                  <span className={`status-pill ${status === "Wrong" ? "status-wrong" : status === "Correct" ? "status-correct" : "status-not-attempted"}`}>
+                    {status}
+                  </span>
+                </div>
+              );
+            })}
+            {!statusQuestions.length && <p className="status-empty">No questions match your search.</p>}
+          </div>
+        </section>
+      </PageTransition>
+    );
   }
 
   function renderAdmin() {
@@ -1309,27 +1590,63 @@ export default function App() {
     </aside>
     {mobileMenu && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMobileMenu(false)} />}
     <main className="main-area">
-      <header className="topbar"><div className="top-left"><button className="menu-toggle" onClick={() => setMobileMenu(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="breadcrumb"><span>Workspace</span><i>/</i><b>{isAdmin ? "Admin" : activeExam?.name ?? "Select an exam"}</b><i>/</i><b>{isAdmin && view === "admin" ? titleCase(adminArea.replace("-", " ")) : viewLabel}</b></div></div>
-        <div className="top-actions"><span className="demo-badge">Local storage · this browser only</span><label className="header-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search questions…" disabled={!selectedExam && view !== "progress"} /></label><ThemeToggle darkMode={darkMode} onToggle={() => setDarkMode((current) => !current)} /><button className="icon-button" onClick={() => profile ? (isAdmin ? setAdminArea("dashboard") : visit("progress")) : setAuthOpen(true)} aria-label={profile ? (isAdmin ? "Admin dashboard" : "My progress") : "Sign in"}><UserRound size={18} /></button></div>
+      <header className="topbar">
+        <div className="top-left">
+          <button className="menu-toggle" onClick={() => setMobileMenu(true)} aria-label="Open navigation"><Menu size={20} /></button>
+          <div className="breadcrumb">
+            <span>Workspace</span><i>/</i><b>{isAdmin ? "Admin" : activeExam?.name ?? "Select an exam"}</b><i>/</i><b>{isAdmin && view === "admin" ? titleCase(adminArea.replace("-", " ")) : viewLabel}</b>
+          </div>
+        </div>
+        <div className="top-actions">
+          <label className="header-search group focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-500/40 transition-all">
+            <Search size={16} className="text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search questions…" disabled={!selectedExam && view !== "progress"} />
+            <kbd className="hidden sm:inline-flex text-[10px] text-slate-400 border border-slate-200 dark:border-slate-700 px-1.5 py-0.5 rounded font-mono">⌘K</kbd>
+          </label>
+          <ThemeToggle darkMode={darkMode} onToggle={() => setDarkMode((current) => !current)} />
+          <button className="icon-button" onClick={() => profile ? (isAdmin ? setAdminArea("dashboard") : visit("progress")) : setAuthOpen(true)} aria-label={profile ? (isAdmin ? "Admin dashboard" : "My progress") : "Sign in"}>
+            <UserRound size={18} />
+          </button>
+        </div>
       </header>
       <div className="content-area">
-        {!appReady && <div className="loading-state"><div className="spinner" /> Loading your account…</div>}
-        {appReady && isAdmin && view === "admin" && renderAdmin()}
-        {appReady && !isAdmin && view === "reports" && <QuestionReportsPanel
-        reports={questionReports} questions={questions}
-        isAdmin={false} historyRevision={0} onReview={changeQuestionReport} onEditQuestion={() => undefined}
-          onEvidence={openQuestionReportEvidence} onError={showError}
-        onExit={() => { setSelectedExam(null); setView("dashboard"); }}
-        />}
-        {appReady && !isAdmin && !selectedExam && view === "progress" && renderProgress()}
-        {appReady && !isAdmin && !selectedExam && view !== "progress" && view !== "reports" && <ExamPicker exams={exams.filter((exam) => !settings.hiddenExamIds.includes(exam.id))} onSelect={openExam} onProgress={() => visit("progress")} profile={profile} onAuth={() => setAuthOpen(true)} onAdmin={() => visit("admin")} title={settings.title} welcome={settings.welcomeMessage} logoUrl={settings.logoUrl} />}
-        {appReady && !isAdmin && selectedExam && <>
-          {view === "dashboard" && (sectionId ? renderSectionPicker() : renderDashboard())}
-          {view === "practice" && renderQuiz()}
-          {view === "random" && (quiz || result ? renderQuiz() : renderRandom())}
-          {view === "wrong" && (quiz || result ? renderQuiz() : renderWrong())}
-          {view === "progress" && renderProgress()}
-        </>}
+        <AnimatePresence mode="wait">
+          {!appReady && <div className="loading-state"><div className="spinner" /> Loading your account…</div>}
+          {appReady && isAdmin && view === "admin" && (
+            <PageTransition key="admin-view">
+              {renderAdmin()}
+            </PageTransition>
+          )}
+          {appReady && !isAdmin && view === "reports" && (
+            <PageTransition key="student-reports">
+              <QuestionReportsPanel
+                reports={questionReports} questions={questions}
+                isAdmin={false} historyRevision={0} onReview={changeQuestionReport} onEditQuestion={() => undefined}
+                onEvidence={openQuestionReportEvidence} onError={showError}
+                onExit={() => { setSelectedExam(null); setView("dashboard"); }}
+              />
+            </PageTransition>
+          )}
+          {appReady && !isAdmin && !selectedExam && view === "progress" && (
+            <PageTransition key="overall-progress">
+              {renderProgress()}
+            </PageTransition>
+          )}
+          {appReady && !isAdmin && !selectedExam && view !== "progress" && view !== "reports" && (
+            <PageTransition key="exam-picker">
+              <ExamPicker exams={exams.filter((exam) => !settings.hiddenExamIds.includes(exam.id))} onSelect={openExam} onProgress={() => visit("progress")} profile={profile} onAuth={() => setAuthOpen(true)} onAdmin={() => visit("admin")} title={settings.title} welcome={settings.welcomeMessage} logoUrl={settings.logoUrl} />
+            </PageTransition>
+          )}
+          {appReady && !isAdmin && selectedExam && (
+            <PageTransition key={`${selectedExam}-${view}-${sectionId ?? "none"}`}>
+              {view === "dashboard" && (sectionId ? renderSectionPicker() : renderDashboard())}
+              {view === "practice" && renderQuiz()}
+              {view === "random" && (quiz || result ? renderQuiz() : renderRandom())}
+              {view === "wrong" && (quiz || result ? renderQuiz() : renderWrong())}
+              {view === "progress" && renderProgress()}
+            </PageTransition>
+          )}
+        </AnimatePresence>
       </div>
     </main>
     {editing && <EntityEditor key={`${editing.type}-${editing.item?.id ?? "new"}`} type={editing.type} item={editing.item} exams={exams} sections={sections} chapters={chapters} onClose={() => setEditing(null)} onSave={(item) => void saveEntity(editing.type, item, editing.reportId)} classify={(text) => classifyQuestion(text, { exams, sections, chapters })} />}
@@ -1357,7 +1674,20 @@ function SectionIcon({ index }: { index: number }) {
 }
 
 function StatCard({ icon, label, value, caption, tone }: { icon: ReactNode; label: string; value: string | number; caption: string; tone: string }) {
-  return <article className="stat-card"><div className={`stat-icon tone-${tone}`}>{icon}</div><div><span>{label}</span><b>{value}</b><small>{caption}</small></div><div className="stat-sparkline"><i /><i /><i /><i /><i /><i /><i /></div></article>;
+  return (
+    <motion.article
+      whileHover={{ y: -3, transition: { duration: 0.16 } }}
+      className="stat-card cursor-default select-none"
+    >
+      <div className={`stat-icon tone-${tone}`}>{icon}</div>
+      <div>
+        <span>{label}</span>
+        <b>{value}</b>
+        <small>{caption}</small>
+      </div>
+      <div className="stat-sparkline"><i /><i /><i /><i /><i /><i /><i /></div>
+    </motion.article>
+  );
 }
 
 function MiniStat({ label, value }: { label: string; value: string | number }) {
@@ -1368,15 +1698,111 @@ function ExamPicker({ exams, onSelect, onProgress, profile, onAuth, onAdmin, tit
   exams: Exam[]; onSelect: (id: string) => void; onProgress: () => void; profile: UserProfile | null;
   onAuth: () => void; onAdmin: () => void; title: string; welcome: string; logoUrl: string;
 }) {
-  return <div className="picker-page">
-    <header className="picker-header"><div className="brand"><div className="brand-mark">{logoUrl ? <img src={logoUrl} alt="" /> : <GraduationCap size={23} />}</div><div><b>{title}</b><small>EXAM PRACTICE</small></div></div><div className="picker-header-actions flex items-center">{profile && <button className="button button-quiet" onClick={onProgress}><Activity size={16} /> My progress</button>}{profile?.role === "admin" && <button className="button button-quiet" onClick={onAdmin}><ShieldCheck size={16} /> Admin</button>}<button className="button button-outline" onClick={profile ? onProgress : onAuth}>{profile ? <><UserRound size={16} /> {profile.name}</> : <><LogIn size={16} /> Sign in</>}</button></div></header>
-    <div className="picker-body"><div className="picker-copy"><span className="eyebrow"><span className="eyebrow-dot" /> YOUR MBA JOURNEY STARTS HERE</span><h1>Which exam are<br />you preparing for?</h1><p>{welcome}</p><div className="picker-perks"><span><Check size={15} /> Exam-specific question bank</span><span><Check size={15} /> Progress saved by exam</span></div></div>
-      <div className="exam-card-grid">{exams.map((exam, index) => <button key={exam.id} className={`exam-card exam-${exam.color}`} onClick={() => onSelect(exam.id)}>
-        <div className="exam-card-top"><span className="exam-card-icon">{index === 0 ? <Target /> : index === 1 ? <Zap /> : index === 2 ? <BookOpen /> : <Award />}</span><span className="card-arrow"><ArrowRight size={17} /></span></div>
-        <h2>{exam.name}</h2><p>{exam.tagline}</p><span className="exam-card-bottom">Explore exam <ArrowRight size={14} /></span><span className="exam-card-shape" />
-      </button>)}</div>
-    </div><div className="picker-footer"><span>Built for focused practice. Made for your next big step.</span><span><ShieldCheck size={14} /> Your progress stays yours</span></div>
-  </div>;
+  const examBadges: Record<string, { authority: string; colorClass: string }> = {
+    cat: { authority: "IIM Entrance", colorClass: "border-indigo-500/30 text-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/40" },
+    cmat: { authority: "NTA / AICTE", colorClass: "border-emerald-500/30 text-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/40" },
+    mat: { authority: "AIMA National", colorClass: "border-amber-500/30 text-amber-500 bg-amber-50/50 dark:bg-amber-950/40" },
+    xat: { authority: "XLRI Jamshedpur", colorClass: "border-cyan-500/30 text-cyan-500 bg-cyan-50/50 dark:bg-cyan-950/40" },
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3 }}
+      className="picker-page"
+    >
+      <header className="picker-header">
+        <div className="brand">
+          <div className="brand-mark">
+            {logoUrl ? <img src={logoUrl} alt="" /> : <GraduationCap size={23} />}
+          </div>
+          <div>
+            <b>{title}</b>
+            <small>EXAM PRACTICE SUITE</small>
+          </div>
+        </div>
+        <div className="picker-header-actions flex items-center gap-3">
+          {profile && (
+            <button className="button button-quiet" onClick={onProgress}>
+              <Activity size={16} /> My progress
+            </button>
+          )}
+          {profile?.role === "admin" && (
+            <button className="button button-quiet" onClick={onAdmin}>
+              <ShieldCheck size={16} /> Admin workspace
+            </button>
+          )}
+          <button className="button button-outline" onClick={profile ? onProgress : onAuth}>
+            {profile ? (
+              <><UserRound size={16} /> {profile.name}</>
+            ) : (
+              <><LogIn size={16} /> Sign in</>
+            )}
+          </button>
+        </div>
+      </header>
+
+      <div className="picker-body">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          className="picker-copy"
+        >
+          <span className="eyebrow">
+            <span className="eyebrow-dot" /> COMPREHENSIVE MBA ENTRANCE PLATFORM
+          </span>
+          <h1>Which exam are<br />you preparing for?</h1>
+          <p>{welcome}</p>
+          <div className="picker-perks">
+            <span><Check size={15} /> Real Past Question Papers &amp; CBT Mocks</span>
+            <span><Check size={15} /> LaTeX Math &amp; Graph Inspection</span>
+            <span><Check size={15} /> Personalized Analytics</span>
+          </div>
+        </motion.div>
+
+        <div className="exam-card-grid">
+          {exams.map((exam, index) => {
+            const badge = examBadges[exam.id.toLowerCase()] || { authority: "MBA Test", colorClass: "text-indigo-500" };
+            return (
+              <motion.button
+                key={exam.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, delay: index * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                whileHover={{ y: -6, transition: { duration: 0.18 } }}
+                whileTap={{ scale: 0.98 }}
+                className={`exam-card exam-${exam.color} relative overflow-hidden text-left`}
+                onClick={() => onSelect(exam.id)}
+              >
+                <div className="exam-card-top">
+                  <span className="exam-card-icon">
+                    {index === 0 ? <Target /> : index === 1 ? <Zap /> : index === 2 ? <BookOpen /> : <Award />}
+                  </span>
+                  <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${badge.colorClass}`}>
+                    {badge.authority}
+                  </span>
+                </div>
+                <h2>{exam.name}</h2>
+                <p>{exam.tagline}</p>
+                <span className="exam-card-bottom flex items-center justify-between">
+                  <span>Start Practice &amp; CBT Mock</span>
+                  <ArrowRight size={15} />
+                </span>
+                <span className="exam-card-shape" />
+              </motion.button>
+            );
+          })}
+        </div>
+      </div>
+
+      <footer className="picker-footer">
+        <span>Engineered for focused learning. Made for your top percentile.</span>
+        <span><ShieldCheck size={14} /> Secure authentication · Private browser progress</span>
+      </footer>
+    </motion.div>
+  );
 }
 
 function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onSubmit, onBack, onDismissError }: {
@@ -1384,48 +1810,217 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
   onChoose: (kind: LoginKind) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onBack: () => void; onDismissError: () => void;
 }) {
-  return <main className="login-page">
-    <header className="login-header"><a className="login-brand" href="#" onClick={(event) => { event.preventDefault(); onChoose("student"); }}><span className="brand-mark"><GraduationCap size={23} /></span><span><b>MBA Prep</b><small>EXAM PRACTICE</small></span></a><div className="login-header-actions"><ThemeToggle darkMode={darkMode} onToggle={onToggleTheme} /><span className="login-header-note"><ShieldCheck size={16} /> Secure account access</span></div></header>
-    {kind === "choose" ? <section className="account-choice">
-      <span className="eyebrow"><span className="eyebrow-dot" /> WELCOME TO YOUR MBA JOURNEY</span>
-      <h1>Choose your account</h1><p>Sign in to continue to your personalized preparation space.</p>
-      <div className="account-choice-grid">
-        <button type="button" className="account-choice-card student-choice" onClick={() => onChoose("student")}>
-          <span className="account-choice-icon"><GraduationCap size={26} /></span><span className="account-choice-title">Student Login</span>
-          <span className="account-choice-description">Practice CAT, CMAT, MAT and XAT, and track your personal progress.</span>
-          <span className="account-choice-link">Student ID and password <ArrowRight size={16} /></span>
-        </button>
-        <button type="button" className="account-choice-card admin-choice" onClick={() => onChoose("admin")}>
-          <span className="account-choice-icon"><ShieldCheck size={26} /></span><span className="account-choice-title">Admin Login</span>
-          <span className="account-choice-description">Private access to question management, student records and site settings.</span>
-          <span className="account-choice-link">Secure admin sign in <ArrowRight size={16} /></span>
-          <span className="admin-only-badge">AUTHORIZED ADMIN ONLY</span>
-        </button>
-      </div>
-      {error && <div className="login-error login-chooser-error"><CircleHelp size={17} />{error}<button onClick={onDismissError} aria-label="Dismiss message"><X size={15} /></button></div>}
-      <div className="demo-login-note"><CircleHelp size={16} /> Accounts and progress are saved in this browser only.</div>
-    </section> : <section className="login-form-card">
-      <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Change account type</button>
-      <div className={`login-form-icon ${kind === "admin" ? "login-form-admin" : ""}`}>{kind === "admin" ? <ShieldCheck size={27} /> : <GraduationCap size={27} />}</div>
-      <span className="eyebrow">{kind === "admin" ? "RESTRICTED ACCESS" : "YOUR PRACTICE, YOUR PROGRESS"}</span>
-      <h1>{kind === "admin" ? "Admin Login" : "Student Login"}</h1>
-      <p>{kind === "admin" ? "Sign in with the private Admin ID and password." : "Enter the Student ID and password provided by your administrator."}</p>
-      {error && <div className="login-error"><CircleHelp size={17} />{error}</div>}
-      <form className="editor-form login-form" onSubmit={onSubmit}>
-          <Field label={kind === "admin" ? "Admin ID" : "Student ID"} name="studentId" placeholder={kind === "admin" ? "Enter your Admin ID" : "Enter your Student ID"} required autoComplete="username" />
-          <Field label={kind === "admin" ? "Admin Password" : "Password"} name="password" type="password" placeholder="Enter your password" required autoComplete="current-password" />
-          <button className="button button-primary button-full" disabled={busy}>{busy ? "Please wait…" : kind === "admin" ? "Login to Admin Dashboard" : "Login to Student Portal"}</button>
-      </form>
-      <div className="admin-login-security"><ShieldCheck size={16} /> Student accounts are created and managed by the administrator. Account data is stored in this browser.</div>
-    </section>}
-    <footer className="login-footer"><span>Focused practice for your next big step.</span><span><ShieldCheck size={14} /> Student progress is private to each account</span></footer>
-  </main>;
+  const [typedId, setTypedId] = useState("");
+  const [typedPassword, setTypedPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+
+  function fillDemo(studentId: string, pass: string) {
+    setTypedId(studentId);
+    setTypedPassword(pass);
+  }
+
+  return (
+    <main className="login-page">
+      <header className="login-header">
+        <a
+          className="login-brand"
+          href="#"
+          onClick={(event) => { event.preventDefault(); onChoose("student"); }}
+        >
+          <span className="brand-mark"><GraduationCap size={23} /></span>
+          <span><b>MBA Prep</b><small>EXAM PRACTICE</small></span>
+        </a>
+        <div className="login-header-actions">
+          <ThemeToggle darkMode={darkMode} onToggle={onToggleTheme} />
+          <span className="login-header-note"><ShieldCheck size={16} /> Secure local authentication</span>
+        </div>
+      </header>
+
+      <AnimatePresence mode="wait">
+        {kind === "choose" ? (
+          <motion.section
+            key="choose"
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.22 }}
+            className="account-choice"
+          >
+            <span className="eyebrow"><span className="eyebrow-dot" /> WELCOME TO YOUR PREPARATION SUITE</span>
+            <h1>Choose your account</h1>
+            <p>Sign in to continue to your personalized preparation space and exam analytics.</p>
+
+            <div className="account-choice-grid">
+              <motion.button
+                whileHover={{ y: -4 }}
+                whileTap={{ scale: 0.98 }}
+                type="button"
+                className="account-choice-card student-choice"
+                onClick={() => onChoose("student")}
+              >
+                <span className="account-choice-icon"><GraduationCap size={26} /></span>
+                <span className="account-choice-title">Student Portal</span>
+                <span className="account-choice-description">Practice CAT, CMAT, MAT and XAT questions, solve past papers, and review personal performance.</span>
+                <span className="account-choice-link">Sign in with Student ID <ArrowRight size={16} /></span>
+              </motion.button>
+
+              <motion.button
+                whileHover={{ y: -4 }}
+                whileTap={{ scale: 0.98 }}
+                type="button"
+                className="account-choice-card admin-choice"
+                onClick={() => onChoose("admin")}
+              >
+                <span className="account-choice-icon"><ShieldCheck size={26} /></span>
+                <span className="account-choice-title">Admin Console</span>
+                <span className="account-choice-description">Manage question banks, AI PDF extractions, examine challenge reports, and create student accounts.</span>
+                <span className="account-choice-link">Secure administrator access <ArrowRight size={16} /></span>
+                <span className="admin-only-badge">AUTHORIZED ADMIN ONLY</span>
+              </motion.button>
+            </div>
+
+            {error && (
+              <div className="login-error login-chooser-error">
+                <CircleHelp size={17} />{error}
+                <button onClick={onDismissError} aria-label="Dismiss message"><X size={15} /></button>
+              </div>
+            )}
+            <div className="demo-login-note">
+              <Sparkles size={16} className="text-amber-500" /> Demo account data and test progress are securely isolated to your browser.
+            </div>
+          </motion.section>
+        ) : (
+          <motion.section
+            key="form"
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.22 }}
+            className="login-form-card"
+          >
+            <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Switch account type</button>
+            <div className={`login-form-icon ${kind === "admin" ? "login-form-admin" : ""}`}>
+              {kind === "admin" ? <ShieldCheck size={27} /> : <GraduationCap size={27} />}
+            </div>
+            <span className="eyebrow">{kind === "admin" ? "RESTRICTED ACCESS" : "STUDENT WORKSPACE"}</span>
+            <h1>{kind === "admin" ? "Admin Login" : "Student Login"}</h1>
+            <p>{kind === "admin" ? "Sign in with your private administrative credentials." : "Enter your Student ID and password to access question banks and mock tests."}</p>
+
+            {error && <div className="login-error"><CircleHelp size={17} />{error}</div>}
+
+            <form className="editor-form login-form" onSubmit={onSubmit}>
+              <label className="form-label">
+                <span>{kind === "admin" ? "Admin ID" : "Student ID"}</span>
+                <input
+                  name="studentId"
+                  value={typedId}
+                  onChange={(e) => setTypedId(e.target.value)}
+                  placeholder={kind === "admin" ? "Enter 'admin'" : "Enter Student ID (e.g. STU101)"}
+                  required
+                  autoComplete="username"
+                />
+              </label>
+
+              <label className="form-label">
+                <span>{kind === "admin" ? "Admin Password" : "Password"}</span>
+                <div className="relative flex items-center">
+                  <input
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    value={typedPassword}
+                    onChange={(e) => setTypedPassword(e.target.value)}
+                    placeholder="Enter password"
+                    required
+                    autoComplete="current-password"
+                    className="w-full pr-10"
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    className="absolute right-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                    onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </label>
+
+              <button className="button button-primary button-full mt-2" disabled={busy}>
+                {busy ? "Authenticating…" : kind === "admin" ? "Login to Admin Console" : "Enter Practice Portal"}
+              </button>
+            </form>
+
+            {/* Quick Demo Pre-Fill Helper */}
+            <div className="demo-fill-box mt-4 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-xs">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1.5 font-semibold">
+                <span>Quick Demo Fill:</span>
+                <span className="text-[10px] uppercase tracking-wider text-indigo-500">1-Click</span>
+              </div>
+              {kind === "admin" ? (
+                <button
+                  type="button"
+                  className="w-full text-left p-1.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors flex items-center justify-between"
+                  onClick={() => fillDemo("admin", "admin123456")}
+                >
+                  <span>Admin: <b>admin</b></span>
+                  <span className="text-indigo-500 text-[11px] font-bold">Use Credentials →</span>
+                </button>
+              ) : (
+                <div className="space-y-1">
+                  <button
+                    type="button"
+                    className="w-full text-left p-1.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors flex items-center justify-between"
+                    onClick={() => fillDemo("STU101", "student123")}
+                  >
+                    <span>Sample Student: <b>STU101</b></span>
+                    <span className="text-indigo-500 text-[11px] font-bold">Use Credentials →</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="admin-login-security mt-4">
+              <ShieldCheck size={16} /> Data is secured via PBKDF2 cryptography and verified locally.
+            </div>
+          </motion.section>
+        )}
+      </AnimatePresence>
+
+      <footer className="login-footer">
+        <span>Focused practice for your next big step.</span>
+        <span><ShieldCheck size={14} /> Student progress is private to each account</span>
+      </footer>
+    </main>
+  );
 }
 
 function ThemeToggle({ darkMode, onToggle }: { darkMode: boolean; onToggle: () => void }) {
-  return <button className="theme-toggle" type="button" onClick={onToggle} aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"} title={darkMode ? "Light mode" : "Dark mode"}>
-    {darkMode ? <Sun size={17} /> : <Moon size={17} />}<span>{darkMode ? "Light" : "Dark"}</span>
-  </button>;
+  return (
+    <motion.button
+      whileHover={{ scale: 1.04 }}
+      whileTap={{ scale: 0.96 }}
+      className="theme-toggle"
+      type="button"
+      onClick={onToggle}
+      aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+      title={darkMode ? "Light mode" : "Dark mode"}
+    >
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.span
+          key={darkMode ? "dark" : "light"}
+          initial={{ rotate: -70, opacity: 0, scale: 0.8 }}
+          animate={{ rotate: 0, opacity: 1, scale: 1 }}
+          exit={{ rotate: 70, opacity: 0, scale: 0.8 }}
+          transition={{ duration: 0.18 }}
+          className="inline-flex items-center"
+        >
+          {darkMode ? <Sun size={17} className="text-amber-400" /> : <Moon size={17} className="text-indigo-500" />}
+        </motion.span>
+      </AnimatePresence>
+      <span>{darkMode ? "Light" : "Dark"}</span>
+    </motion.button>
+  );
 }
 
 function dateText(value: unknown): string {
@@ -2009,7 +2604,39 @@ function AdminPanel({ type, types, rows, exams, sections, chapters, questions, a
 function Field({ label, name, value, onChange, placeholder, required, type = "text", minLength, autoComplete }: {
   label: string; name: string; value?: string; onChange?: (value: string) => void; placeholder?: string; required?: boolean; type?: string; minLength?: number; autoComplete?: string;
 }) {
-  return <label className="form-label">{label}<input name={name} type={type} value={value} onChange={onChange ? (event) => onChange(event.target.value) : undefined} placeholder={placeholder} required={required} minLength={minLength} autoComplete={autoComplete} /></label>;
+  const [showPassword, setShowPassword] = useState(false);
+  const isPassword = type === "password";
+  const inputType = isPassword ? (showPassword ? "text" : "password") : type;
+
+  return (
+    <label className="form-label">
+      <span>{label}</span>
+      <div className="relative flex items-center">
+        <input
+          name={name}
+          type={inputType}
+          value={value}
+          onChange={onChange ? (event) => onChange(event.target.value) : undefined}
+          placeholder={placeholder}
+          required={required}
+          minLength={minLength}
+          autoComplete={autoComplete}
+          className="w-full pr-10"
+        />
+        {isPassword && (
+          <button
+            type="button"
+            tabIndex={-1}
+            className="absolute right-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            onClick={() => setShowPassword(!showPassword)}
+            aria-label={showPassword ? "Hide password" : "Show password"}
+          >
+            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        )}
+      </div>
+    </label>
+  );
 }
 
 function AnswerCheckNotice({ check, acknowledged, onAcknowledge }: {
