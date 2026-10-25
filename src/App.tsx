@@ -352,6 +352,19 @@ export default function App() {
     window.setTimeout(() => setError(""), 6000);
   }, []);
 
+  // One-time global cleanup: clear questions from browser storage
+  useEffect(() => {
+    const WIPE_FLAG = "mba-questions-wiped-all-2026-v1";
+    if (!localStorage.getItem(WIPE_FLAG)) {
+      localStorage.removeItem("mba-questions");
+      localStorage.removeItem("mba-extracted-papers");
+      localStorage.removeItem("mba-extracted-papers-record");
+      localStorage.setItem(WIPE_FLAG, "true");
+      setQuestions([]);
+      setExtractedPapers([]);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isFirebaseConfigured || !firestore) return;
     getDocs(collection(firestore, "extractedPapers"))
@@ -367,6 +380,10 @@ export default function App() {
             localStorage.setItem("mba-extracted-papers-record", JSON.stringify(merged));
             return merged;
           });
+        } else {
+          setExtractedPapers([]);
+          localStorage.removeItem("mba-extracted-papers");
+          localStorage.removeItem("mba-extracted-papers-record");
         }
       })
       .catch((err) => console.warn("Could not fetch remote extracted papers:", err));
@@ -450,10 +467,9 @@ export default function App() {
         .filter((question) => Boolean(question.question.trim()));
 
       setQuestions((current) => {
+        const nonFirestore = current.filter((q) => !q.id.startsWith("firestore-"));
         const map = new Map<string, Question>();
-        // Preserve current questions
-        current.forEach((q) => map.set(q.id, q));
-        // Merge in remote questions
+        nonFirestore.forEach((q) => map.set(q.id, q));
         nextQuestions.forEach((q) => map.set(q.id, q));
         return Array.from(map.values());
       });
@@ -984,7 +1000,28 @@ export default function App() {
         console.warn("Could not delete from Firestore:", e);
       }
     }
-    setQuestions((current) => current.filter((q) => q.id !== questionId));
+    // Also prune from extractedPapers if this question came from an imported paper
+    setExtractedPapers((current) => {
+      const updated = current.map((p) => {
+        if (!Array.isArray(p.extractedQuestions)) return p;
+        const filteredQ = p.extractedQuestions.filter((rawQ: unknown, idx: number) => {
+          const qObj = rawQ as Record<string, unknown>;
+          const qNum = typeof qObj?.questionNumber === "number" ? qObj.questionNumber : (Number(qObj?.question_number) || idx + 1);
+          const qId = (typeof qObj?.id === "string" && qObj.id.trim()) ? qObj.id : `paper-${p.id}-q${qNum}`;
+          return qId !== questionId && qObj?.id !== questionId;
+        });
+        return { ...p, extractedQuestions: filteredQ, totalQuestions: filteredQ.length };
+      });
+      localStorage.setItem("mba-extracted-papers-record", JSON.stringify(updated));
+      localStorage.setItem("mba-extracted-papers", JSON.stringify(updated));
+      return updated;
+    });
+
+    setQuestions((current) => {
+      const next = current.filter((q) => q.id !== questionId);
+      localStorage.setItem("mba-questions", JSON.stringify(next.filter((q) => !q.id.startsWith("firestore-"))));
+      return next;
+    });
     setToast("Question deleted successfully");
     window.setTimeout(() => setToast(""), 2500);
   }
@@ -1007,9 +1044,63 @@ export default function App() {
         console.warn("Batch delete Firestore notice:", e);
       }
     }
-    setQuestions((current) => current.filter((q) => !idSet.has(q.id)));
+    // Also prune from extractedPapers
+    setExtractedPapers((current) => {
+      const updated = current.map((p) => {
+        if (!Array.isArray(p.extractedQuestions)) return p;
+        const filteredQ = p.extractedQuestions.filter((rawQ: unknown, idx: number) => {
+          const qObj = rawQ as Record<string, unknown>;
+          const qNum = typeof qObj?.questionNumber === "number" ? qObj.questionNumber : (Number(qObj?.question_number) || idx + 1);
+          const qId = (typeof qObj?.id === "string" && qObj.id.trim()) ? qObj.id : `paper-${p.id}-q${qNum}`;
+          return !idSet.has(qId) && !idSet.has(String(qObj?.id));
+        });
+        return { ...p, extractedQuestions: filteredQ, totalQuestions: filteredQ.length };
+      });
+      localStorage.setItem("mba-extracted-papers-record", JSON.stringify(updated));
+      localStorage.setItem("mba-extracted-papers", JSON.stringify(updated));
+      return updated;
+    });
+
+    setQuestions((current) => {
+      const next = current.filter((q) => !idSet.has(q.id));
+      localStorage.setItem("mba-questions", JSON.stringify(next.filter((q) => !q.id.startsWith("firestore-"))));
+      return next;
+    });
     setToast(`Deleted ${questionIds.length} question(s) successfully`);
     window.setTimeout(() => setToast(""), 3000);
+  }
+
+  async function handleDeleteAllQuestionsGlobally() {
+    if (!isAdmin) {
+      showError("Only the authorized administrator can delete all questions.");
+      return;
+    }
+    try {
+      if (isFirebaseConfigured && firestore) {
+        const db = firestore;
+        const eqSnap = await getDocs(collection(db, "examQuestions"));
+        const eqDeletes = eqSnap.docs.map((d) => deleteDoc(doc(db, "examQuestions", d.id)));
+
+        const epSnap = await getDocs(collection(db, "extractedPapers"));
+        const epDeletes = epSnap.docs.map((d) => deleteDoc(doc(db, "extractedPapers", d.id)));
+
+        await Promise.allSettled([...eqDeletes, ...epDeletes]);
+      }
+
+      localStorage.removeItem("mba-questions");
+      localStorage.removeItem("mba-extracted-papers");
+      localStorage.removeItem("mba-extracted-papers-record");
+
+      setQuestions([]);
+      setExtractedPapers([]);
+      setQuiz(null);
+
+      setToast("All questions across all categories and exams have been completely deleted.");
+      window.setTimeout(() => setToast(""), 3500);
+    } catch (err) {
+      console.error("Global questions deletion error:", err);
+      showError(err instanceof Error ? err.message : "Failed to delete all questions.");
+    }
   }
 
   async function seedSampleData() {
@@ -1738,6 +1829,7 @@ export default function App() {
         questions={questions}
         onDeleteQuestion={handleDeleteSingleQuestion}
         onDeleteBatch={handleDeleteBatchQuestions}
+        onDeleteAllGlobal={handleDeleteAllQuestionsGlobally}
       />
     );
     if (adminArea === "questions" || adminArea === "sections" || adminArea === "chapters") {
@@ -2728,12 +2820,14 @@ function DeleteQuestionsPanel({
   questions,
   onDeleteQuestion,
   onDeleteBatch,
+  onDeleteAllGlobal,
 }: {
   exams: Exam[];
   sections: Section[];
   questions: Question[];
   onDeleteQuestion: (questionId: string) => Promise<void>;
   onDeleteBatch: (questionIds: string[]) => Promise<void>;
+  onDeleteAllGlobal: () => Promise<void>;
 }) {
   const [selectedExamId, setSelectedExamId] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -2856,6 +2950,26 @@ function DeleteQuestionsPanel({
     });
   };
 
+  const handleDeleteGlobalAll = () => {
+    if (!questions.length) return;
+    setConfirmDialog({
+      open: true,
+      title: "PERMANENT GLOBAL WIPE: Delete ALL questions from EVERYWHERE?",
+      description: `EXTREME WARNING: This will permanently delete ALL ${questions.length} questions across ALL exams (CAT, CMAT, MAT, XAT) and categories from Firebase Firestore, extracted papers, browser storage, and student portals. This cannot be undone!`,
+      count: questions.length,
+      action: async () => {
+        setBusy(true);
+        try {
+          await onDeleteAllGlobal();
+          setSelectedQuestionIds({});
+        } finally {
+          setBusy(false);
+          setConfirmDialog(null);
+        }
+      },
+    });
+  };
+
   const totalFilteredQuestions = useMemo(() => {
     let count = 0;
     for (const exam of filteredExams) {
@@ -2883,6 +2997,15 @@ function DeleteQuestionsPanel({
           <span className="soft-badge">
             <b>{totalFilteredQuestions}</b> questions shown
           </span>
+          {questions.length > 0 && (
+            <button
+              type="button"
+              className="button button-danger flex items-center gap-1.5 text-xs py-2 px-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-sm transition-all"
+              onClick={handleDeleteGlobalAll}
+            >
+              <Trash2 size={13} /> Delete All Questions Everywhere
+            </button>
+          )}
         </div>
       </section>
 
