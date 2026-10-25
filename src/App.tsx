@@ -89,26 +89,37 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
     || (typeof row.topic === "string" && row.topic.trim())
     || "";
   const section = sections.find((item) => item.examId === examId && item.name.trim().toLowerCase() === category.toLowerCase())
+    ?? sections.find((item) => item.examId === examId && (
+      (category.toLowerCase().includes("verbal") && item.name.toLowerCase().includes("verbal")) ||
+      (category.toLowerCase().includes("decision") && item.name.toLowerCase().includes("decision")) ||
+      (category.toLowerCase().includes("quant") && item.name.toLowerCase().includes("quant")) ||
+      (category.toLowerCase().includes("general") && item.name.toLowerCase().includes("general"))
+    ))
     ?? sections.find((item) => item.examId === examId);
   const chapter = section && (chapters.find((item) => item.sectionId === section.id && item.name.trim().toLowerCase() === (row.chapter ? String(row.chapter).trim().toLowerCase() : ""))
     ?? chapters.find((item) => item.sectionId === section.id));
 
   const rowOptions = row.options && typeof row.options === "object" ? (row.options as Record<string, string>) : {};
-  const options = {
+  const options: Record<string, string> = {
     A: typeof row.optionA === "string" && row.optionA.trim() ? row.optionA : (rowOptions.A ?? ""),
     B: typeof row.optionB === "string" && row.optionB.trim() ? row.optionB : (rowOptions.B ?? ""),
     C: typeof row.optionC === "string" && row.optionC.trim() ? row.optionC : (rowOptions.C ?? ""),
     D: typeof row.optionD === "string" && row.optionD.trim() ? row.optionD : (rowOptions.D ?? ""),
   };
+  if (typeof row.optionE === "string" && row.optionE.trim()) {
+    options.E = row.optionE;
+  } else if (rowOptions.E) {
+    options.E = rowOptions.E;
+  }
 
   const rawAnswer = (typeof row.answer === "string" && row.answer.trim())
     || (typeof row.correctAnswer === "string" && row.correctAnswer.trim())
     || (typeof row.correct_answer === "string" && row.correct_answer.trim())
     || "";
   const answer = pdfSolution?.answer ?? rawAnswer;
-  const noOptions = Object.values(options).every((option) => !option.trim());
-  const answerLetter = (["A", "B", "C", "D"] as const).find((letter) => letter === answer.toUpperCase())
-    ?? (["A", "B", "C", "D"] as const).find((letter) => options[letter].trim().toLowerCase() === answer.toLowerCase());
+  const hasOptions = Boolean(options.A?.trim() || options.B?.trim());
+  const answerLetter = (["A", "B", "C", "D", "E"] as const).find((letter) => letter === answer.toUpperCase())
+    ?? (["A", "B", "C", "D", "E"] as const).find((letter) => options[letter]?.trim().toLowerCase() === answer.toLowerCase());
 
   const yearNum = typeof row.year === "number" ? row.year : (typeof row.sourceYear === "number" ? row.sourceYear : (Number(row.year) || undefined));
   const slotStr = typeof row.slot === "string" || typeof row.slot === "number" ? String(row.slot) : (typeof row.sourceSlot === "string" ? row.sourceSlot : undefined);
@@ -122,14 +133,14 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
   return {
     id: `firestore-${id}`,
     examId,
-    sectionId: section?.id ?? `${examId}-uncategorized`,
-    chapterId: chapter?.id ?? `${examId}-uncategorized-chapter`,
+    sectionId: section?.id ?? `${examId}-s1`,
+    chapterId: chapter?.id ?? `${section?.id ?? `${examId}-s1`}-c1`,
     topic: category || undefined,
     question: questionText,
     options,
-    answerMode: noOptions ? "text" : "choice",
-    correctAnswer: noOptions ? answer || undefined : answerLetter,
-    hasAnswerKey: Boolean(noOptions ? answer : answerLetter),
+    answerMode: hasOptions ? "choice" : "text",
+    correctAnswer: hasOptions ? answerLetter : answer || undefined,
+    hasAnswerKey: Boolean(hasOptions ? answerLetter : answer),
     explanation: pdfSolution?.explanation ?? (typeof row.explanation === "string" ? row.explanation : ""),
     difficulty: (row.difficulty as Difficulty) || "Medium",
     year: yearNum,
@@ -145,10 +156,111 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
     hasDiagram,
   };
 }
+
+function aiQuestionToAppQuestion(
+  q: Record<string, unknown>,
+  index: number,
+  paper: ExtractedPaper,
+  sections: Section[],
+  chapters: Chapter[]
+): Question {
+  const examId = (paper.examId || (typeof q.examId === "string" ? q.examId : "xat")).toLowerCase();
+  const qText = String(q.question ?? "").trim();
+
+  // Find matching section with keyword tolerance
+  const sectionName = String(q.section ?? q.subject ?? q.category ?? "").trim().toLowerCase();
+  const matchedSection = sections.find((s) => s.examId === examId && s.name.trim().toLowerCase() === sectionName)
+    ?? sections.find((s) => s.examId === examId && (
+      (sectionName.includes("verbal") && s.name.toLowerCase().includes("verbal")) ||
+      (sectionName.includes("decision") && s.name.toLowerCase().includes("decision")) ||
+      (sectionName.includes("quant") && s.name.toLowerCase().includes("quant")) ||
+      (sectionName.includes("data") && s.name.toLowerCase().includes("data")) ||
+      (sectionName.includes("general") && s.name.toLowerCase().includes("general")) ||
+      (sectionName.includes("knowledge") && s.name.toLowerCase().includes("knowledge"))
+    ))
+    ?? sections.find((s) => s.examId === examId);
+
+  const sectionId = matchedSection?.id ?? `${examId}-s1`;
+
+  // Find matching chapter
+  const chapterName = String(q.chapter ?? q.topic ?? "").trim().toLowerCase();
+  const matchedChapter = chapters.find((c) => c.sectionId === sectionId && c.name.trim().toLowerCase() === chapterName)
+    ?? chapters.find((c) => c.sectionId === sectionId);
+  const chapterId = matchedChapter?.id ?? `${sectionId}-c1`;
+
+  // Parse options
+  let optA = "";
+  let optB = "";
+  let optC = "";
+  let optD = "";
+  let optE = "";
+
+  if (Array.isArray(q.options)) {
+    optA = String(q.options[0] ?? "");
+    optB = String(q.options[1] ?? "");
+    optC = String(q.options[2] ?? "");
+    optD = String(q.options[3] ?? "");
+    optE = String(q.options[4] ?? "");
+  } else if (q.options && typeof q.options === "object") {
+    const opts = q.options as Record<string, unknown>;
+    optA = String(opts.A ?? opts.optionA ?? "");
+    optB = String(opts.B ?? opts.optionB ?? "");
+    optC = String(opts.C ?? opts.optionC ?? "");
+    optD = String(opts.D ?? opts.optionD ?? "");
+    optE = String(opts.E ?? opts.optionE ?? "");
+  } else {
+    optA = String(q.optionA ?? "");
+    optB = String(q.optionB ?? "");
+    optC = String(q.optionC ?? "");
+    optD = String(q.optionD ?? "");
+    optE = String(q.optionE ?? "");
+  }
+
+  const optionMap: Record<string, string> = { A: optA, B: optB, C: optC, D: optD };
+  if (optE.trim()) optionMap.E = optE;
+
+  const hasOptions = Boolean(optA.trim() || optB.trim());
+  const rawAns = String(q.correctAnswer ?? q.answer ?? "").trim().toUpperCase();
+  const answerLetter = (["A", "B", "C", "D", "E"] as const).find((l) => l === rawAns)
+    ?? (["A", "B", "C", "D", "E"] as const).find((l) => optionMap[l]?.trim().toLowerCase() === rawAns.toLowerCase());
+
+  const qNum = typeof q.questionNumber === "number" ? q.questionNumber : (Number(q.question_number) || index + 1);
+  const qId = (typeof q.id === "string" && q.id.trim()) ? q.id : `paper-${paper.id}-q${qNum}`;
+
+  return {
+    id: qId,
+    examId,
+    sectionId,
+    chapterId,
+    topic: (typeof q.chapter === "string" && q.chapter.trim()) || matchedChapter?.name || "General Practice",
+    subTopic: (typeof q.topic === "string" && q.topic.trim()) || undefined,
+    question: qText,
+    options: optionMap,
+    answerMode: hasOptions ? "choice" : "text",
+    correctAnswer: hasOptions ? answerLetter : rawAns || undefined,
+    hasAnswerKey: Boolean(hasOptions ? answerLetter : rawAns),
+    explanation: String(q.explanation ?? ""),
+    difficulty: (q.difficulty as Difficulty) || "Medium",
+    questionType: (typeof q.type === "string" && q.type.trim()) || (hasOptions ? "MCQ" : "TITA"),
+    tags: Array.isArray(q.tags) ? (q.tags as string[]) : [],
+    paperId: paper.id,
+    paperTitle: paper.paperTitle,
+    year: paper.year,
+    slot: paper.slot,
+    sourceYear: paper.year,
+    sourceSlot: paper.slot,
+    source: paper.fileName,
+    question_number: qNum,
+    imageUrl: typeof q.imageUrl === "string" ? q.imageUrl : undefined,
+    imageAlt: typeof q.imageAlt === "string" ? q.imageAlt : undefined,
+    hasDiagram: Boolean(q.hasDiagram || q.imageUrl),
+  };
+}
+
 async function fetchFirestoreExamQuestions(examId: string, sections: Section[], chapters: Chapter[]): Promise<Question[]> {
   if (!firestore) throw new Error("Firebase is not configured. Add your Firebase Web App values to .env.local and restart the app.");
   const examCode = examId.toUpperCase();
-  const examQuery = query(collection(firestore, "examQuestions"), where("exam", "==", examCode));
+  const examQuery = query(collection(firestore, "examQuestions"), where("exam", "in", [examCode, examId.toLowerCase()]));
   const snapshot = await getDocs(examQuery);
   return snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), examId, sections, chapters))
     .filter((question) => Boolean(question.question.trim()));
@@ -223,7 +335,14 @@ export default function App() {
   const [editing, setEditing] = useState<{ type: EntityType; item?: Entity; reportId?: string } | null>(null);
   const [reportingQuestion, setReportingQuestion] = useState<Question | null>(null);
   const [bulkClassifications, setBulkClassifications] = useState<Question[] | null>(null);
-  const [extractedPapers, setExtractedPapers] = useState<ExtractedPaper[]>(() => readLocal<ExtractedPaper[]>("mba-extracted-papers", []));
+  const [extractedPapers, setExtractedPapers] = useState<ExtractedPaper[]>(() => {
+    const primary = readLocal<ExtractedPaper[]>("mba-extracted-papers-record", []);
+    const secondary = readLocal<ExtractedPaper[]>("mba-extracted-papers", []);
+    const map = new Map<string, ExtractedPaper>();
+    secondary.forEach((p) => map.set(p.id, p));
+    primary.forEach((p) => map.set(p.id, p));
+    return Array.from(map.values());
+  });
   const [activeCbtPaper, setActiveCbtPaper] = useState<{ paper: ExtractedPaper; questions: Question[] } | null>(null);
   const isAdmin = profile?.role === "admin";
   const pendingReportCount = questionReports.filter((report) => report.status === "Pending Review").length;
@@ -245,6 +364,7 @@ export default function App() {
             remote.forEach((p) => map.set(p.id, p));
             const merged = Array.from(map.values());
             localStorage.setItem("mba-extracted-papers", JSON.stringify(merged));
+            localStorage.setItem("mba-extracted-papers-record", JSON.stringify(merged));
             return merged;
           });
         }
@@ -319,14 +439,12 @@ export default function App() {
     setExamQuestionsLoading(true);
     setExamQuestionsError("");
     const examCode = selectedExam.toUpperCase();
-    const examQuery = query(collection(firestore, "examQuestions"), where("exam", "==", examCode));
+    const examQuery = query(collection(firestore, "examQuestions"), where("exam", "in", [examCode, selectedExam.toLowerCase()]));
     return onSnapshot(examQuery, (snapshot) => {
       const remoteIds = new Set(snapshot.docs.map((document) => document.id));
-      const nextQuestions = snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), selectedExam, sections, chapters))
-        .filter((question) => question.question.trim()
-          && (question.answerMode === "text"
-            ? Object.values(question.options).every((option) => !option.trim())
-            : Object.values(question.options).every((option) => option.trim())));
+      const nextQuestions = snapshot.docs
+        .map((document) => mapFirestoreQuestion(document.id, document.data(), selectedExam, sections, chapters))
+        .filter((question) => Boolean(question.question.trim()));
       setQuestions((current) => [
         ...current.filter((question) => question.examId !== selectedExam || (!question.id.startsWith("firestore-") && !remoteIds.has(question.id))),
         ...nextQuestions,
@@ -347,13 +465,65 @@ export default function App() {
     });
   }, [selectedExam, sections, chapters, questionLoadRevision]);
 
+  // Bridge approved questions from extracted papers for the active exam into the student portal question pool
+  useEffect(() => {
+    if (!selectedExam) return;
+    const examCode = selectedExam.toLowerCase();
+    const relevantPapers = extractedPapers.filter(
+      (p) => (p.examId || "").toLowerCase() === examCode || (p.examName || "").toLowerCase() === examCode
+    );
+    if (!relevantPapers.length) return;
+
+    const paperQuestions: Question[] = [];
+    for (const paper of relevantPapers) {
+      if (!Array.isArray(paper.extractedQuestions) || !paper.extractedQuestions.length) continue;
+
+      paper.extractedQuestions.forEach((rawQ: unknown, index: number) => {
+        const qObj = rawQ as Record<string, unknown>;
+        const isApproved = qObj.status === "approved" || !qObj.status || paper.status === "Completed" || (paper.approvedCount > 0 && index < paper.approvedCount);
+        if (isApproved && typeof qObj.question === "string" && qObj.question.trim()) {
+          const converted = aiQuestionToAppQuestion(qObj, index, paper, sections, chapters);
+          paperQuestions.push(converted);
+        }
+      });
+    }
+
+    if (paperQuestions.length > 0) {
+      setQuestions((current) => {
+        const existingMap = new Map(current.map((q) => [q.id, q]));
+        const textSet = new Set(current.filter((q) => q.examId === selectedExam).map((q) => q.question.trim().toLowerCase()));
+
+        let added = 0;
+        for (const pq of paperQuestions) {
+          if (!existingMap.has(pq.id) && !textSet.has(pq.question.trim().toLowerCase())) {
+            existingMap.set(pq.id, pq);
+            textSet.add(pq.question.trim().toLowerCase());
+            added++;
+          }
+        }
+        if (added > 0) {
+          const merged = Array.from(existingMap.values());
+          localStorage.setItem("mba-questions", JSON.stringify(merged.filter((q) => !q.id.startsWith("firestore-"))));
+          return merged;
+        }
+        return current;
+      });
+    }
+  }, [selectedExam, extractedPapers, sections, chapters]);
+
   useEffect(() => {
     localStorage.setItem("mba-dark-mode", JSON.stringify(darkMode));
   }, [darkMode]);
 
   const activeExam = exams.find((exam) => exam.id === selectedExam);
   const examSections = sections.filter((section) => section.examId === selectedExam && !settings.hiddenSectionIds.includes(section.id));
-  const examQuestions = questions.filter((question) => question.examId === selectedExam && examSections.some((section) => section.id === question.sectionId));
+  const examQuestions = questions.filter((question) => {
+    if (question.examId !== selectedExam) return false;
+    const hasMatchingSection = examSections.some((section) => section.id === question.sectionId);
+    if (hasMatchingSection) return true;
+    // Fallback: If question belongs to this exam, allow it and attribute to exam
+    return !question.sectionId || question.sectionId.startsWith(selectedExam);
+  });
   const byId = useMemo(() => new Map(attempts.map((attempt) => [attempt.questionId, attempt])), [attempts]);
   useEffect(() => {
     if (!isAdmin) {
