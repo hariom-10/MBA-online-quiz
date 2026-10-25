@@ -61,7 +61,8 @@ export function cookieOptions(req, maxAge) {
 export function sameOrigin(req) {
   const origin = req.headers.origin;
   const host = req.headers["x-forwarded-host"] || req.headers.host;
-  if (!origin || !host) return false;
+  if (!origin) return true;
+  if (!host) return false;
   try { return new URL(origin).host === host; } catch { return false; }
 }
 

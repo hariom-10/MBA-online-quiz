@@ -8,6 +8,8 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { runAiWithFailover } from "./aiApiKeyStore";
 import { ApiKeyManager } from "./ApiKeyManager";
+import { firestore, isFirebaseConfigured } from "./firebase";
+import { collection, deleteDoc, doc, getDocs, setDoc } from "firebase/firestore";
 
 // Set the pdf.js worker source for client-side PDF text extraction
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
@@ -308,8 +310,30 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   const [dragging, setDragging] = useState(false);
   const [showApiKeysModal, setShowApiKeysModal] = useState(false);
 
-  // Sync extracted papers from backend on mount
+  // Sync extracted papers from client Firestore and backend on mount
   useEffect(() => {
+    // 1. Client-side Firestore direct sync
+    if (isFirebaseConfigured && firestore) {
+      getDocs(collection(firestore, "extractedPapers"))
+        .then((snapshot) => {
+          if (!snapshot.empty) {
+            const remotePapers = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }) as ExtractedPaper);
+            setExtractedPapers((current) => {
+              const map = new Map<string, ExtractedPaper>();
+              current.forEach((p) => map.set(p.id, p));
+              remotePapers.forEach((p) => map.set(p.id, p));
+              const merged = Array.from(map.values()).sort((a, b) => String(b.extractedAt || "").localeCompare(String(a.extractedAt || "")));
+              localStorage.setItem(PAPERS_STORAGE_KEY, JSON.stringify(merged));
+              return merged;
+            });
+          }
+        })
+        .catch(() => {
+          /* Local storage fallback already active */
+        });
+    }
+
+    // 2. Backend endpoint sync (if serverless database configured)
     fetch("/api/admin/papers")
       .then((res) => (res.ok ? res.json() : Promise.reject()))
       .then((data: { papers?: ExtractedPaper[] }) => {
@@ -369,6 +393,14 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
       return next;
     });
 
+    if (isFirebaseConfigured && firestore) {
+      try {
+        await setDoc(doc(firestore, "extractedPapers", record.id), record, { merge: true });
+      } catch (err) {
+        console.warn("Client Firestore paper save note:", err);
+      }
+    }
+
     try {
       await fetch("/api/admin/papers", {
         method: "POST",
@@ -376,7 +408,7 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
         body: JSON.stringify(record),
       });
     } catch {
-      // Saved in localStorage
+      // Saved in client-side Firestore & localStorage
     }
   }
 
@@ -387,10 +419,18 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
       return next;
     });
 
+    if (isFirebaseConfigured && firestore) {
+      try {
+        await deleteDoc(doc(firestore, "extractedPapers", id));
+      } catch (err) {
+        console.warn("Client Firestore paper delete note:", err);
+      }
+    }
+
     try {
       await fetch(`/api/admin/papers?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     } catch {
-      // Deleted from localStorage
+      // Deleted from client-side Firestore & localStorage
     }
   }
 
