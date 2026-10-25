@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import {
   Activity, ArrowLeft, ArrowRight, Award, BookOpen, Check, ChevronDown, CircleHelp, ClipboardList,
   Clock3, Filter, Flag, GraduationCap, Image as ImageIcon, Key, LayoutDashboard, LogIn, LogOut, Menu, Moon, Search, ShieldCheck, Sun,
-  Shuffle, Sparkles, Target, Trash2, UserRound, X, Zap, Users, Settings, Layers3,
+  Shuffle, Sparkles, Target, Trash2, UserRound, X, Zap, Users, Settings, Layers3, FileText,
 } from "lucide-react";
 import { initialChapters, initialExams, initialQuestions, initialSections } from "./data";
 import { applyClassification, classifyQuestion, type QuestionClassification } from "./classifier";
@@ -11,6 +11,7 @@ import { findCat2024Slot3Solution } from "./cat2024Slot3Solutions";
 import { MathContent, MathPreview } from "./MathContent";
 import { AiPdfImport } from "./AiPdfImport";
 import { ApiKeyManager } from "./ApiKeyManager";
+import { CbtMockExam } from "./CbtMockExam";
 import { firestore, isFirebaseConfigured } from "./firebase";
 import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import {
@@ -18,7 +19,7 @@ import {
   readLocalStudents, recordLocalAttempt, resetLocalStudentPassword, restoreLocalSession as restoreAccountSession,
   setLocalStudentDisabled, syncFirebaseStudents, updateLocalStudent, verifyAdminSession,
 } from "./localAuth";
-import type { Answer, Attempt, Chapter, Difficulty, Exam, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, UserProfile } from "./model";
+import type { Answer, Attempt, Chapter, Difficulty, Exam, ExtractedPaper, CbtExamResult, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, UserProfile } from "./model";
 
 type View = "dashboard" | "practice" | "random" | "wrong" | "progress" | "reports" | "admin";
 type QuizState = { questions: Question[]; index: number; answers: Record<string, string | null>; title: string; origin: View; sessionId: string };
@@ -214,12 +215,33 @@ export default function App() {
   const [editing, setEditing] = useState<{ type: EntityType; item?: Entity; reportId?: string } | null>(null);
   const [reportingQuestion, setReportingQuestion] = useState<Question | null>(null);
   const [bulkClassifications, setBulkClassifications] = useState<Question[] | null>(null);
+  const [extractedPapers, setExtractedPapers] = useState<ExtractedPaper[]>(() => readLocal<ExtractedPaper[]>("mba-extracted-papers", []));
+  const [activeCbtPaper, setActiveCbtPaper] = useState<{ paper: ExtractedPaper; questions: Question[] } | null>(null);
   const isAdmin = profile?.role === "admin";
   const pendingReportCount = questionReports.filter((report) => report.status === "Pending Review").length;
 
   const showError = useCallback((message: string) => {
     setError(message);
     window.setTimeout(() => setError(""), 6000);
+  }, []);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured || !firestore) return;
+    getDocs(collection(firestore, "extractedPapers"))
+      .then((snapshot) => {
+        if (!snapshot.empty) {
+          const remote = snapshot.docs.map((d) => ({ ...d.data(), id: d.id } as ExtractedPaper));
+          setExtractedPapers((current) => {
+            const map = new Map<string, ExtractedPaper>();
+            current.forEach((p) => map.set(p.id, p));
+            remote.forEach((p) => map.set(p.id, p));
+            const merged = Array.from(map.values());
+            localStorage.setItem("mba-extracted-papers", JSON.stringify(merged));
+            return merged;
+          });
+        }
+      })
+      .catch((err) => console.warn("Could not fetch remote extracted papers:", err));
   }, []);
 
   useEffect(() => {
@@ -447,6 +469,37 @@ export default function App() {
   function startChapter(section: Section, chapter: Chapter) {
     setSectionId(section.id);
     beginQuiz(questions.filter((question) => question.chapterId === chapter.id), `${section.name} · ${chapter.name}`, "practice");
+  }
+  function launchCbtMock(paper: ExtractedPaper, paperQuestions: Question[]) {
+    if (!paperQuestions.length) {
+      showError("No questions found for this paper in the question bank.");
+      return;
+    }
+    setActiveCbtPaper({ paper, questions: paperQuestions });
+  }
+  function handleSaveCbtAttempt(res: CbtExamResult) {
+    if (!profile) return;
+    const sessionId = makeId("cbt-session");
+    const newAttempts: Attempt[] = Object.entries(res.answers).map(([qId, ans]) => {
+      const q = questions.find((item) => item.id === qId);
+      const isCorrect = q ? (q.correctAnswer ?? "").trim().toUpperCase() === ans.trim().toUpperCase() : false;
+      return {
+        questionId: qId,
+        examId: res.examId,
+        selectedAnswer: ans,
+        isCorrect,
+        attemptedAt: res.submittedAt,
+        sessionId,
+      };
+    });
+    setAttempts((cur) => {
+      const updated = [...cur, ...newAttempts];
+      localStorage.setItem(`mba-progress-${profile.uid}`, JSON.stringify(updated));
+      return updated;
+    });
+    newAttempts.forEach((att) => recordLocalAttempt(profile.uid, att));
+    setToast(`Mock test score recorded: ${res.rawScore} marks (${res.accuracy}% accuracy)`);
+    window.setTimeout(() => setToast(""), 3500);
   }
   async function saveEntity(type: EntityType, value: Entity, relatedReportId?: string) {
     if (!isAdmin) {
@@ -842,6 +895,109 @@ export default function App() {
     return { total, attempted: list.length, correct, wrong: list.length - correct, accuracy: percent(correct, list.length), completion: percent(list.length, total) };
   };
 
+  function renderPastPapersSection() {
+    if (!activeExam) return null;
+    const examCode = activeExam.id.toLowerCase();
+    const papers = extractedPapers.filter(
+      (p) => (p.examId || "").toLowerCase() === examCode || (p.examName || "").toLowerCase() === examCode
+    );
+
+    const examPool = examQuestions.length > 0 ? examQuestions : questions.filter((q) => q.examId === activeExam.id);
+
+    return (
+      <section className="past-papers-panel">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow"><Sparkles size={14} /> EXAM SIMULATION</span>
+            <h2>Past Year Papers &amp; Full CBT Mock Tests</h2>
+            <p>Practice in an authentic Computer-Based Test (TCS iON CAT pattern) environment with sectional timers, question palette, and official marking (+3 / -1).</p>
+          </div>
+          <span className="soft-badge">{papers.length ? `${papers.length} official papers` : "Full mock available"}</span>
+        </div>
+
+        <div className="past-papers-grid">
+          {papers.map((paper) => {
+            const paperSpecificQuestions = examPool.filter(
+              (q) => q.paperId === paper.id || 
+                     (q.year === paper.year && String(q.slot || "").toLowerCase() === String(paper.slot || "").toLowerCase()) ||
+                     (paper.paperTitle && q.paperTitle && q.paperTitle === paper.paperTitle)
+            );
+            const finalQuestions = paperSpecificQuestions.length > 0 ? paperSpecificQuestions : examPool.slice(0, paper.totalQuestions || 66);
+
+            return (
+              <article key={paper.id} className="past-paper-card">
+                <div>
+                  <div className="past-paper-card-top">
+                    <span className="past-paper-exam-badge">{paper.examName || activeExam.name} CBT PATTERN</span>
+                    <span className="soft-badge">{paper.year} · {paper.slot}</span>
+                  </div>
+                  <h3>{paper.paperTitle || `${paper.examName} ${paper.year} ${paper.slot}`}</h3>
+                  <p>Authentic past question paper with step-by-step solutions, marking, and full scorecard.</p>
+                  <div className="past-paper-stats-row">
+                    <span><FileText size={14} /> {finalQuestions.length || paper.totalQuestions} Questions</span>
+                    <span><Clock3 size={14} /> {finalQuestions.length > 30 ? "120" : "40"} mins</span>
+                    <span><Target size={14} /> +3 / -1 marks</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="button button-primary past-paper-cbt-btn"
+                  onClick={() => launchCbtMock(paper, finalQuestions)}
+                >
+                  <Zap size={15} /> Launch CBT Mock Test
+                </button>
+              </article>
+            );
+          })}
+
+          <article className="past-paper-card" style={{ borderStyle: "dashed" }}>
+            <div>
+              <div className="past-paper-card-top">
+                <span className="past-paper-exam-badge" style={{ background: "#fef3c7", color: "#b45309", borderColor: "#fde68a" }}>
+                  ALL SECTIONS
+                </span>
+                <span className="soft-badge">Adaptive Simulation</span>
+              </div>
+              <h3>{activeExam.name} Full-Length CBT Mock Test</h3>
+              <p>Timed full-length exam simulation generated from the comprehensive {activeExam.name} question bank.</p>
+              <div className="past-paper-stats-row">
+                <span><FileText size={14} /> {Math.min(examPool.length, 66)} Questions</span>
+                <span><Clock3 size={14} /> 120 mins</span>
+                <span><Target size={14} /> +3 / -1 marks</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="button button-primary past-paper-cbt-btn"
+              style={{ background: "#7c3aed" }}
+              disabled={examPool.length === 0}
+              onClick={() => {
+                const fullMockPaper: ExtractedPaper = {
+                  id: `adaptive-mock-${activeExam.id}`,
+                  fileName: `${activeExam.name} Full-Length Mock`,
+                  paperTitle: `${activeExam.name} Full-Length All-Sections CBT Mock`,
+                  examId: activeExam.id,
+                  examName: activeExam.name,
+                  year: new Date().getFullYear(),
+                  slot: "All Sections",
+                  extractedAt: new Date().toISOString(),
+                  extractedBy: "System",
+                  totalQuestions: Math.min(examPool.length, 66),
+                  approvedCount: Math.min(examPool.length, 66),
+                  rejectedCount: 0,
+                  status: "Completed",
+                };
+                launchCbtMock(fullMockPaper, examPool.slice(0, 66));
+              }}
+            >
+              <Zap size={15} /> Start {activeExam.name} Full Mock Test
+            </button>
+          </article>
+        </div>
+      </section>
+    );
+  }
+
   function renderDashboard() {
     if (!activeExam) return null;
     const stats = currentAttemptStats(activeExam.id);
@@ -861,6 +1017,7 @@ export default function App() {
         <StatCard icon={<Check />} label="Correct answers" value={stats.correct} caption={`${stats.wrong} incorrect`} tone="green" />
         <StatCard icon={<Target />} label="Accuracy" value={`${stats.accuracy}%`} caption="on attempted questions" tone="orange" />
       </section>
+      {renderPastPapersSection()}
       <section className="section-heading"><div><h2>Choose a section</h2><p>Pick a subject to explore its chapters and practice.</p></div><span className="soft-badge">{examSections.length} sections</span></section>
       {examQuestionsLoading && <div className="loading-state" role="status"><div className="spinner" /> Loading {activeExam.name} questions from Firebase…</div>}
       {!!examQuestionsError && <div className="empty-state"><div><CircleHelp size={26} /></div><p>{examQuestionsError}</p><button className="button button-outline" onClick={() => setQuestionLoadRevision((revision) => revision + 1)}>Retry loading</button></div>}
@@ -1079,6 +1236,29 @@ export default function App() {
     />
     {toast && <div className="toast">{toast}<button onClick={() => setToast("")}><X size={16} /></button></div>}
   </div>;
+
+  if (appReady && activeCbtPaper) {
+    return (
+      <div className={`app-shell theme-${settings.theme}${darkMode ? " mode-dark" : ""}`}>
+        <CbtMockExam
+          paper={activeCbtPaper.paper}
+          questions={activeCbtPaper.questions}
+          sections={sections}
+          candidateName={profile?.name || "Student"}
+          onExit={() => setActiveCbtPaper(null)}
+          onSaveAttempt={handleSaveCbtAttempt}
+          onReportQuestion={(q) => setReportingQuestion(q)}
+        />
+        {(error || toast) && (
+          <div className={`toast ${error ? "toast-error" : ""}`}>
+            {error ? <CircleHelp size={18} /> : <Check size={18} />}
+            {error || toast}
+            <button onClick={() => { setError(""); setToast(""); }}><X size={16} /></button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return <div className={`app-shell theme-${settings.theme}${darkMode ? " mode-dark" : ""}`}>
     <aside className={`sidebar ${mobileMenu ? "sidebar-open" : ""}`}>

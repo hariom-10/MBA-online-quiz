@@ -127,3 +127,30 @@ export type SiteSettings = {
 };
 
 export const EXAM_IDS = ["cat", "cmat", "mat", "xat"] as const;
+
+export type CbtQuestionStatus =
+  | "not_visited"
+  | "not_answered"
+  | "answered"
+  | "marked_for_review"
+  | "answered_and_marked";
+
+export type CbtExamResult = {
+  paperId: string;
+  paperTitle: string;
+  examId: string;
+  totalQuestions: number;
+  attempted: number;
+  correct: number;
+  incorrect: number;
+  unattempted: number;
+  rawScore: number;
+  maxScore: number;
+  accuracy: number;
+  estimatedPercentile: number;
+  totalTimeSeconds: number;
+  answers: Record<string, string>;
+  timeSpent: Record<string, number>;
+  sectionScores: Record<string, { name: string; total: number; attempted: number; correct: number; incorrect: number; score: number }>;
+  submittedAt: string;
+};
