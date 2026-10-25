@@ -28,7 +28,7 @@ type QuizState = { questions: Question[]; index: number; answers: Record<string,
 type EntityType = "exam" | "section" | "chapter" | "question";
 type Entity = Exam | Section | Chapter | Question;
 type LoginKind = "student" | "admin";
-type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "sections" | "chapters" | "statistics" | "settings" | "reports" | "ai-import" | "api-keys";
+type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "delete-questions" | "sections" | "chapters" | "statistics" | "settings" | "reports" | "ai-import" | "api-keys";
 const defaultSettings: SiteSettings = {
   id: "public",
   title: "MBA Prep",
@@ -970,6 +970,48 @@ export default function App() {
       showError(reason instanceof Error ? reason.message : "Delete failed.");
     }
   }
+
+  async function handleDeleteSingleQuestion(questionId: string) {
+    if (!isAdmin) {
+      showError("Only the authorized administrator can delete questions.");
+      return;
+    }
+    const cleanId = questionId.startsWith("firestore-") ? questionId.replace("firestore-", "") : questionId;
+    if (isFirebaseConfigured && firestore && questionId.startsWith("firestore-")) {
+      try {
+        await deleteDoc(doc(firestore, "examQuestions", cleanId));
+      } catch (e) {
+        console.warn("Could not delete from Firestore:", e);
+      }
+    }
+    setQuestions((current) => current.filter((q) => q.id !== questionId));
+    setToast("Question deleted successfully");
+    window.setTimeout(() => setToast(""), 2500);
+  }
+
+  async function handleDeleteBatchQuestions(questionIds: string[]) {
+    if (!isAdmin) {
+      showError("Only the authorized administrator can delete questions.");
+      return;
+    }
+    if (!questionIds.length) return;
+    const idSet = new Set(questionIds);
+    if (isFirebaseConfigured && firestore) {
+      const db = firestore;
+      const deletePromises = questionIds
+        .filter((id) => id.startsWith("firestore-"))
+        .map((id) => deleteDoc(doc(db, "examQuestions", id.replace("firestore-", ""))));
+      try {
+        await Promise.allSettled(deletePromises);
+      } catch (e) {
+        console.warn("Batch delete Firestore notice:", e);
+      }
+    }
+    setQuestions((current) => current.filter((q) => !idSet.has(q.id)));
+    setToast(`Deleted ${questionIds.length} question(s) successfully`);
+    window.setTimeout(() => setToast(""), 3000);
+  }
+
   async function seedSampleData() {
     if (!isAdmin) {
       showError("Only the authorized admin account can change the question bank.");
@@ -1689,6 +1731,15 @@ export default function App() {
       title={adminArea === "dashboard" ? "Admin dashboard" : "Statistics"}
       students={students} attempts={adminAttempts} exams={exams} questions={questions} sections={sections}
     />;
+    if (adminArea === "delete-questions") return (
+      <DeleteQuestionsPanel
+        exams={exams}
+        sections={sections}
+        questions={questions}
+        onDeleteQuestion={handleDeleteSingleQuestion}
+        onDeleteBatch={handleDeleteBatchQuestions}
+      />
+    );
     if (adminArea === "questions" || adminArea === "sections" || adminArea === "chapters") {
       const type: EntityType = adminArea === "questions" ? "question" : adminArea === "sections" ? "section" : "chapter";
       const list: Entity[] = type === "section" ? sections : type === "chapter" ? chapters : questions;
@@ -1750,6 +1801,7 @@ export default function App() {
           ["students", "Students", Users],
           ["create-student", "Create Student Account", UserRound],
           ["questions", "Questions", CircleHelp],
+          ["delete-questions", "Delete Questions", Trash2],
           ["ai-import", "AI PDF Import", Sparkles],
           ["api-keys", "AI API Keys Pool", Key],
           ["sections", "Subjects / Sections", Layers3],
@@ -2668,6 +2720,495 @@ function SettingsPanel({ settings, exams, sections, onSave }: {
       </div>
     )}
   </div>;
+}
+
+function DeleteQuestionsPanel({
+  exams,
+  sections,
+  questions,
+  onDeleteQuestion,
+  onDeleteBatch,
+}: {
+  exams: Exam[];
+  sections: Section[];
+  questions: Question[];
+  onDeleteQuestion: (questionId: string) => Promise<void>;
+  onDeleteBatch: (questionIds: string[]) => Promise<void>;
+}) {
+  const [selectedExamId, setSelectedExamId] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<Record<string, string[]>>({});
+  const [busy, setBusy] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    count: number;
+    action: () => Promise<void>;
+  } | null>(null);
+
+  const filteredExams = useMemo(() => {
+    return selectedExamId === "all" ? exams : exams.filter((e) => e.id === selectedExamId);
+  }, [exams, selectedExamId]);
+
+  const getSectionQuestions = useCallback(
+    (section: Section) => {
+      return questions.filter((q) => {
+        const matchesSection = q.sectionId === section.id || (!q.sectionId && q.examId === section.examId);
+        if (!matchesSection) return false;
+        if (!search.trim()) return true;
+        const lower = search.toLowerCase();
+        return (
+          q.question.toLowerCase().includes(lower) ||
+          (q.topic && q.topic.toLowerCase().includes(lower)) ||
+          (q.subTopic && q.subTopic.toLowerCase().includes(lower)) ||
+          (q.year && String(q.year).includes(lower))
+        );
+      });
+    },
+    [questions, search]
+  );
+
+  const toggleSection = (sectionId: string) => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [sectionId]: !prev[sectionId],
+    }));
+  };
+
+  const isCollapsed = (sectionId: string) => Boolean(collapsedSections[sectionId]);
+
+  const toggleSelectAll = (sectionId: string, sectionQuestions: Question[]) => {
+    const current = selectedQuestionIds[sectionId] || [];
+    if (current.length === sectionQuestions.length) {
+      setSelectedQuestionIds((prev) => ({ ...prev, [sectionId]: [] }));
+    } else {
+      setSelectedQuestionIds((prev) => ({ ...prev, [sectionId]: sectionQuestions.map((q) => q.id) }));
+    }
+  };
+
+  const toggleQuestionSelection = (sectionId: string, qId: string) => {
+    const current = selectedQuestionIds[sectionId] || [];
+    if (current.includes(qId)) {
+      setSelectedQuestionIds((prev) => ({ ...prev, [sectionId]: current.filter((id) => id !== qId) }));
+    } else {
+      setSelectedQuestionIds((prev) => ({ ...prev, [sectionId]: [...current, qId] }));
+    }
+  };
+
+  const handleDeleteSingle = (q: Question, sectionName: string) => {
+    setConfirmDialog({
+      open: true,
+      title: "Delete this question?",
+      description: `Are you sure you want to permanently delete Question #${q.question_number || ""} from "${sectionName}"? This will remove it from the question bank and Firestore.`,
+      count: 1,
+      action: async () => {
+        setBusy(true);
+        try {
+          await onDeleteQuestion(q.id);
+        } finally {
+          setBusy(false);
+          setConfirmDialog(null);
+        }
+      },
+    });
+  };
+
+  const handleDeleteSelected = (section: Section) => {
+    const ids = selectedQuestionIds[section.id] || [];
+    if (!ids.length) return;
+    setConfirmDialog({
+      open: true,
+      title: `Delete ${ids.length} selected question(s)?`,
+      description: `Are you sure you want to permanently delete the ${ids.length} selected question(s) from "${section.name}"? This action cannot be undone.`,
+      count: ids.length,
+      action: async () => {
+        setBusy(true);
+        try {
+          await onDeleteBatch(ids);
+          setSelectedQuestionIds((prev) => ({ ...prev, [section.id]: [] }));
+        } finally {
+          setBusy(false);
+          setConfirmDialog(null);
+        }
+      },
+    });
+  };
+
+  const handleDeleteAll = (section: Section, sectionQuestions: Question[]) => {
+    if (!sectionQuestions.length) return;
+    setConfirmDialog({
+      open: true,
+      title: `Delete ALL ${sectionQuestions.length} questions in ${section.name}?`,
+      description: `WARNING: This will permanently delete all ${sectionQuestions.length} questions in "${section.name}" (${section.examId.toUpperCase()}) from the database and question bank. This cannot be undone.`,
+      count: sectionQuestions.length,
+      action: async () => {
+        setBusy(true);
+        try {
+          await onDeleteBatch(sectionQuestions.map((q) => q.id));
+          setSelectedQuestionIds((prev) => ({ ...prev, [section.id]: [] }));
+        } finally {
+          setBusy(false);
+          setConfirmDialog(null);
+        }
+      },
+    });
+  };
+
+  const totalFilteredQuestions = useMemo(() => {
+    let count = 0;
+    for (const exam of filteredExams) {
+      const examSecs = sections.filter((s) => s.examId === exam.id);
+      for (const s of examSecs) {
+        count += getSectionQuestions(s).length;
+      }
+    }
+    return count;
+  }, [filteredExams, sections, getSectionQuestions]);
+
+  return (
+    <div className="page-stack admin-page delete-questions-manager">
+      <section className="section-heading page-title">
+        <div>
+          <span className="eyebrow text-red-500 flex items-center gap-1.5">
+            <Trash2 size={13} /> DANGER ZONE &amp; CLEANUP
+          </span>
+          <h1>Section-Wise Question Manager</h1>
+          <p>
+            Browse all questions grouped by section. Delete questions one-by-one, select multiple questions in bulk, or wipe entire sections permanently.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="soft-badge">
+            <b>{totalFilteredQuestions}</b> questions shown
+          </span>
+        </div>
+      </section>
+
+      {/* Exam filter tabs & Search */}
+      <div className="delete-manager-controls flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 shadow-sm">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              selectedExamId === "all"
+                ? "bg-indigo-600 text-white shadow-sm"
+                : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+            }`}
+            onClick={() => setSelectedExamId("all")}
+          >
+            All Exams ({questions.length})
+          </button>
+          {exams.map((exam) => {
+            const examQCount = questions.filter((q) => q.examId === exam.id).length;
+            const isSelected = selectedExamId === exam.id;
+            return (
+              <button
+                key={exam.id}
+                type="button"
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  isSelected
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+                }`}
+                onClick={() => setSelectedExamId(exam.id)}
+              >
+                {exam.name} ({examQCount})
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="w-full sm:w-72">
+          <SearchBox
+            value={search}
+            onChange={setSearch}
+            placeholder="Search questions by text or chapter…"
+          />
+        </div>
+      </div>
+
+      {/* Sections List */}
+      <div className="space-y-6 mt-4">
+        {filteredExams.map((exam) => {
+          const examSectionsList = sections.filter((s) => s.examId === exam.id);
+          const examQuestionsTotal = questions.filter((q) => q.examId === exam.id).length;
+
+          return (
+            <div key={exam.id} className="space-y-4">
+              <div className="flex items-center gap-3 border-b border-slate-200 dark:border-slate-800 pb-2">
+                <span className={`mini-exam-icon mini-${exam.color} text-xs font-bold`}>
+                  {exam.name.slice(0, 1)}
+                </span>
+                <h2 className="text-lg font-bold tracking-tight text-slate-800 dark:text-slate-100 m-0">
+                  {exam.name} Exam
+                </h2>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  ({examQuestionsTotal} questions total across {examSectionsList.length} sections)
+                </span>
+              </div>
+
+              <div className="space-y-4">
+                {examSectionsList.map((section) => {
+                  const sectionQuestions = getSectionQuestions(section);
+                  const selectedIds = selectedQuestionIds[section.id] || [];
+                  const allSelected = sectionQuestions.length > 0 && selectedIds.length === sectionQuestions.length;
+                  const someSelected = selectedIds.length > 0;
+                  const collapsed = isCollapsed(section.id);
+
+                  return (
+                    <article
+                      key={section.id}
+                      className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111827] shadow-sm overflow-hidden transition-colors"
+                    >
+                      {/* Section Card Header */}
+                      <div className="p-4 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70 dark:bg-slate-900/40 border-b border-slate-100 dark:border-slate-800/80">
+                        <div
+                          className="flex items-center gap-3 cursor-pointer select-none"
+                          onClick={() => toggleSection(section.id)}
+                        >
+                          <button
+                            type="button"
+                            className="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                            aria-label={collapsed ? "Expand section" : "Collapse section"}
+                          >
+                            <ChevronDown
+                              size={18}
+                              className={`transition-transform duration-200 ${collapsed ? "-rotate-90" : "rotate-0"}`}
+                            />
+                          </button>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 m-0">
+                                {section.name}
+                              </h3>
+                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/50">
+                                {exam.name}
+                              </span>
+                            </div>
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
+                              {sectionQuestions.length} question{sectionQuestions.length !== 1 ? "s" : ""}
+                              {someSelected ? ` · ${selectedIds.length} selected` : ""}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Section Action Controls */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {sectionQuestions.length > 0 && (
+                            <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer px-2.5 py-1 rounded hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors">
+                              <input
+                                type="checkbox"
+                                checked={allSelected}
+                                onChange={() => toggleSelectAll(section.id, sectionQuestions)}
+                                className="rounded text-indigo-600 focus:ring-indigo-500"
+                              />
+                              <span>Select All ({sectionQuestions.length})</span>
+                            </label>
+                          )}
+
+                          {someSelected && (
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 rounded-lg text-xs font-bold text-red-600 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 hover:bg-red-100 dark:hover:bg-red-900/60 transition-colors flex items-center gap-1.5"
+                              disabled={busy}
+                              onClick={() => handleDeleteSelected(section)}
+                            >
+                              <Trash2 size={13} />
+                              Delete Selected ({selectedIds.length})
+                            </button>
+                          )}
+
+                          {sectionQuestions.length > 0 && (
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 shadow-sm transition-colors flex items-center gap-1.5"
+                              disabled={busy}
+                              onClick={() => handleDeleteAll(section, sectionQuestions)}
+                              title="Delete all questions in this section permanently"
+                            >
+                              <Trash2 size={13} />
+                              Delete All ({sectionQuestions.length})
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Section Questions Body */}
+                      {!collapsed && (
+                        <div className="divide-y divide-slate-100 dark:divide-slate-800/80 p-0">
+                          {sectionQuestions.length === 0 ? (
+                            <div className="p-8 text-center text-xs text-slate-400 dark:text-slate-500">
+                              No questions found in this section{search ? " matching your search" : ""}.
+                            </div>
+                          ) : (
+                            sectionQuestions.map((question, qIdx) => {
+                              const isChecked = selectedIds.includes(question.id);
+                              return (
+                                <div
+                                  key={question.id}
+                                  className={`p-4 transition-colors flex items-start gap-3.5 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 ${
+                                    isChecked ? "bg-indigo-50/30 dark:bg-indigo-950/20" : ""
+                                  }`}
+                                >
+                                  {/* Checkbox */}
+                                  <div className="pt-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => toggleQuestionSelection(section.id, question.id)}
+                                      className="rounded text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                                      aria-label={`Select question ${question.question_number || qIdx + 1}`}
+                                    />
+                                  </div>
+
+                                  {/* Number Badge */}
+                                  <span className="flex-none text-xs font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 mt-0.5">
+                                    #{question.question_number || qIdx + 1}
+                                  </span>
+
+                                  {/* Question Content */}
+                                  <div className="flex-1 min-w-0 space-y-2">
+                                    <div className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-relaxed">
+                                      <MathContent text={question.question} />
+                                    </div>
+
+                                    {/* Graph / Diagram Viewer */}
+                                    {question.imageUrl && (
+                                      <div className="max-w-xs mt-1.5">
+                                        <QuestionGraphViewer imageUrl={question.imageUrl} alt={question.imageAlt || "Question Graph"} />
+                                      </div>
+                                    )}
+
+                                    {/* Options Preview */}
+                                    {question.answerMode === "choice" && question.options && (
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs text-slate-600 dark:text-slate-300 pt-1">
+                                        {(["A", "B", "C", "D", "E"] as const).map((optKey) => {
+                                          const optText = (question.options as Record<string, string>)?.[optKey];
+                                          if (!optText) return null;
+                                          const isCorrect = question.correctAnswer?.toUpperCase() === optKey;
+                                          return (
+                                            <div
+                                              key={optKey}
+                                              className={`flex items-start gap-1.5 p-1.5 rounded border ${
+                                                isCorrect
+                                                  ? "border-emerald-500/40 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 font-semibold"
+                                                  : "border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/40"
+                                              }`}
+                                            >
+                                              <span className="font-bold flex-none">{optKey}.</span>
+                                              <span className="truncate"><MathContent text={optText} /></span>
+                                              {isCorrect && <Check size={13} className="ml-auto text-emerald-500 flex-none" />}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    {/* Question Metadata Tags */}
+                                    <div className="flex items-center gap-2 flex-wrap pt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                                      {question.topic && (
+                                        <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium">
+                                          {question.topic}
+                                        </span>
+                                      )}
+                                      {question.difficulty && (
+                                        <span className={`px-2 py-0.5 rounded font-medium ${
+                                          question.difficulty === "Easy"
+                                            ? "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400"
+                                            : question.difficulty === "Hard"
+                                            ? "bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400"
+                                            : "bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400"
+                                        }`}>
+                                          {question.difficulty}
+                                        </span>
+                                      )}
+                                      {question.year && (
+                                        <span>
+                                          Year: <b>{question.year}</b> {question.slot ? `(${question.slot})` : ""}
+                                        </span>
+                                      )}
+                                      {question.paperTitle && (
+                                        <span className="truncate max-w-[200px]" title={question.paperTitle}>
+                                          Paper: {question.paperTitle}
+                                        </span>
+                                      )}
+                                      {question.id.startsWith("firestore-") && (
+                                        <span className="text-[10px] text-indigo-500 font-semibold">
+                                          Firestore Cloud
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Individual Delete Action */}
+                                  <div className="flex-none pt-0.5">
+                                    <button
+                                      type="button"
+                                      className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                                      title="Delete this question"
+                                      disabled={busy}
+                                      onClick={() => handleDeleteSingle(question, section.name)}
+                                    >
+                                      <Trash2 size={16} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Confirmation Dialog */}
+      {confirmDialog && (
+        <Modal onClose={() => !busy && setConfirmDialog(null)}>
+          <div className="editor-modal p-6 max-w-md w-full">
+            <div className="flex items-center gap-3 text-red-600 dark:text-red-400 mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-950/60 flex items-center justify-center flex-none">
+                <Trash2 size={20} />
+              </div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 m-0">
+                {confirmDialog.title}
+              </h2>
+            </div>
+
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-6">
+              {confirmDialog.description}
+            </p>
+
+            <div className="flex justify-end items-center gap-3">
+              <button
+                type="button"
+                className="button button-quiet"
+                disabled={busy}
+                onClick={() => setConfirmDialog(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button bg-red-600 hover:bg-red-700 text-white font-bold"
+                disabled={busy}
+                onClick={() => void confirmDialog.action()}
+              >
+                {busy ? "Deleting…" : `Yes, Delete ${confirmDialog.count > 1 ? `(${confirmDialog.count})` : ""}`}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
 }
 
 function EmptyState({ text, icon }: { text: string; icon?: ReactNode }) {
