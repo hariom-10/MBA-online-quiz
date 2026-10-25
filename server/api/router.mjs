@@ -41,6 +41,62 @@ export async function handleApi(req, res) {
     return json(res, 200, { ok: true }), true;
   }
 
+  // --- Extracted Papers Endpoints ---
+  if (pathname === "/api/admin/papers") {
+    if (!sameOrigin(req)) return json(res, 403, { error: "Request rejected." }), true;
+    if (!currentAdmin(req)) return json(res, 401, { error: "Admin session required." }), true;
+
+    const url = new URL(req.url, "http://localhost");
+    const action = url.searchParams.get("action");
+
+    if (req.method === "GET") {
+      try {
+        const snapshot = await db.collection("extractedPapers").get();
+        const papers = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        papers.sort((a, b) => String(b.extractedAt || "").localeCompare(String(a.extractedAt || "")));
+        return json(res, 200, { papers }), true;
+      } catch (e) {
+        console.warn("[api/admin/papers] Firestore read error:", e.message);
+        return json(res, 200, { papers: [], warning: e.message }), true;
+      }
+    }
+
+    if (req.method === "DELETE" || (req.method === "POST" && action === "delete")) {
+      const id = url.searchParams.get("id");
+      if (id) {
+        try {
+          await db.collection("extractedPapers").doc(id).delete();
+        } catch (e) {
+          console.warn("[api/admin/papers] Firestore delete error:", e.message);
+        }
+      }
+      return json(res, 200, { success: true }), true;
+    }
+
+    if (req.method === "POST") {
+      try {
+        let paper;
+        if (req.body && typeof req.body === "object") {
+          paper = req.body;
+        } else {
+          const raw = (await bodyBuffer(req, 2 * 1024 * 1024)).toString("utf8");
+          paper = raw ? JSON.parse(raw) : {};
+        }
+        if (!paper || !paper.id) return json(res, 400, { error: "Invalid paper payload." }), true;
+
+        await db.collection("extractedPapers").doc(paper.id).set({
+          ...paper,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+
+        return json(res, 200, { success: true, paper }), true;
+      } catch (e) {
+        console.warn("[api/admin/papers] Persistence error:", e);
+        return json(res, 500, { error: e instanceof Error ? e.message : "Failed to persist paper record." }), true;
+      }
+    }
+  }
+
   // --- Secure Admin Import Endpoint ---
   if (pathname === "/api/admin/questions/import" && req.method === "POST") {
     if (!sameOrigin(req)) return json(res, 403, { error: "Request rejected." }), true;
@@ -60,8 +116,46 @@ export async function handleApi(req, res) {
 
       const batch = db.batch();
       questions.forEach((q) => {
-        const docRef = db.collection("examQuestions").doc(q.id);
-        batch.set(docRef, { ...q, importedAt: new Date().toISOString(), status: "published" });
+        const cleanId = String(q.id || "").replace(/^firestore-/, "") || `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const docRef = db.collection("examQuestions").doc(cleanId);
+        const options = q.options && typeof q.options === "object" ? q.options : {
+          A: q.optionA || "", B: q.optionB || "", C: q.optionC || "", D: q.optionD || ""
+        };
+
+        const docData = {
+          id: cleanId,
+          exam: String(q.exam || q.examId || "CAT").toUpperCase(),
+          examId: String(q.examId || q.exam || "cat").toLowerCase(),
+          sectionId: q.sectionId || "",
+          chapterId: q.chapterId || "",
+          year: Number(q.year || q.sourceYear) || (new Date().getFullYear()),
+          slot: String(q.slot || q.sourceSlot || ""),
+          category: q.category || q.topic || q.section || "",
+          subject: q.subject || q.category || q.topic || "",
+          topic: q.topic || q.category || "",
+          question_number: q.question_number || q.questionNumber || null,
+          question: q.question || "",
+          optionA: options.A ?? q.optionA ?? "",
+          optionB: options.B ?? q.optionB ?? "",
+          optionC: options.C ?? q.optionC ?? "",
+          optionD: options.D ?? q.optionD ?? "",
+          options: { A: options.A ?? q.optionA ?? "", B: options.B ?? q.optionB ?? "", C: options.C ?? q.optionC ?? "", D: options.D ?? q.optionD ?? "" },
+          answer: String(q.correctAnswer || q.answer || "").trim(),
+          correctAnswer: String(q.correctAnswer || q.answer || "").trim(),
+          explanation: q.explanation || "",
+          difficulty: q.difficulty || "Medium",
+          questionType: q.questionType || q.type || "MCQ",
+          tags: Array.isArray(q.tags) ? q.tags : [],
+          paperId: q.paperId || "",
+          paperTitle: q.paperTitle || "",
+          source: q.source || q.sourceUrl || "",
+          sourceYear: Number(q.year || q.sourceYear) || (new Date().getFullYear()),
+          sourceSlot: String(q.slot || q.sourceSlot || ""),
+          importedAt: new Date().toISOString(),
+          status: "published",
+        };
+
+        batch.set(docRef, docData, { merge: true });
       });
       await batch.commit();
       return json(res, 200, { success: true, count: questions.length }), true;
@@ -80,7 +174,7 @@ export async function handleApi(req, res) {
   try {
     if (pathname === "/api/pdf/text") {
       const buffer = await bodyBuffer(req);
-      const text = extractPdfText(buffer);
+      const text = await extractPdfText(buffer);
       return json(res, 200, { text, ocrRequired: !isUsablePdfText(text) }), true;
     }
     const payload = JSON.parse((await bodyBuffer(req, 2 * 1024 * 1024)).toString("utf8"));

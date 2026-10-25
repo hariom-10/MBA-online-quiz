@@ -51,13 +51,13 @@ const selectablePdf = makePdf([
   Buffer.from("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", "latin1"),
   Buffer.from("<< /Length 105 >>\nstream\nBT /F1 14 Tf 72 720 Td (1. What is 2 + 2?) Tj T* (A. 3   B. 4   C. 5   D. 6) Tj ET\nendstream", "latin1"),
 ]);
-const nativeText = extractPdfText(selectablePdf);
+const nativeText = await extractPdfText(selectablePdf);
 assert.match(nativeText, /What is 2 \+ 2/);
 assert.equal(isUsablePdfText(nativeText), true, `Native extraction returned: ${nativeText}`);
 console.log("Selectable-text PDF extraction: passed");
 
 const scannedPdf = makeScannedQuestionPdf();
-assert.equal(isUsablePdfText(extractPdfText(scannedPdf)), false);
+assert.equal(isUsablePdfText(await extractPdfText(scannedPdf)), false);
 let pagesProcessed = 0;
 const result = await recognizePdf(scannedPdf, (event) => { if (event.type === "page") pagesProcessed++; });
 assert.equal(result.pageCount, 2);

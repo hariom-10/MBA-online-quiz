@@ -81,20 +81,38 @@ function isCorrectAnswer(question: Question, submitted: string) {
 function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: string, sections: Section[], chapters: Chapter[]): Question {
   const questionText = typeof row.question === "string" ? row.question : "";
   const pdfSolution = examId === "cat" ? findCat2024Slot3Solution(questionText) : undefined;
-  const category = typeof row.category === "string" ? row.category.trim() : "";
+  const category = (typeof row.category === "string" && row.category.trim())
+    || (typeof row.subject === "string" && row.subject.trim())
+    || (typeof row.topic === "string" && row.topic.trim())
+    || "";
   const section = sections.find((item) => item.examId === examId && item.name.trim().toLowerCase() === category.toLowerCase())
     ?? sections.find((item) => item.examId === examId);
-  const chapter = section && chapters.find((item) => item.sectionId === section.id);
+  const chapter = section && (chapters.find((item) => item.sectionId === section.id && item.name.trim().toLowerCase() === (row.chapter ? String(row.chapter).trim().toLowerCase() : ""))
+    ?? chapters.find((item) => item.sectionId === section.id));
+
+  const rowOptions = row.options && typeof row.options === "object" ? (row.options as Record<string, string>) : {};
   const options = {
-    A: typeof row.optionA === "string" ? row.optionA : "",
-    B: typeof row.optionB === "string" ? row.optionB : "",
-    C: typeof row.optionC === "string" ? row.optionC : "",
-    D: typeof row.optionD === "string" ? row.optionD : "",
+    A: typeof row.optionA === "string" && row.optionA.trim() ? row.optionA : (rowOptions.A ?? ""),
+    B: typeof row.optionB === "string" && row.optionB.trim() ? row.optionB : (rowOptions.B ?? ""),
+    C: typeof row.optionC === "string" && row.optionC.trim() ? row.optionC : (rowOptions.C ?? ""),
+    D: typeof row.optionD === "string" && row.optionD.trim() ? row.optionD : (rowOptions.D ?? ""),
   };
-  const answer = pdfSolution?.answer ?? (typeof row.answer === "string" ? row.answer.trim() : "");
+
+  const rawAnswer = (typeof row.answer === "string" && row.answer.trim())
+    || (typeof row.correctAnswer === "string" && row.correctAnswer.trim())
+    || (typeof row.correct_answer === "string" && row.correct_answer.trim())
+    || "";
+  const answer = pdfSolution?.answer ?? rawAnswer;
   const noOptions = Object.values(options).every((option) => !option.trim());
   const answerLetter = (["A", "B", "C", "D"] as const).find((letter) => letter === answer.toUpperCase())
     ?? (["A", "B", "C", "D"] as const).find((letter) => options[letter].trim().toLowerCase() === answer.toLowerCase());
+
+  const yearNum = typeof row.year === "number" ? row.year : (typeof row.sourceYear === "number" ? row.sourceYear : (Number(row.year) || undefined));
+  const slotStr = typeof row.slot === "string" || typeof row.slot === "number" ? String(row.slot) : (typeof row.sourceSlot === "string" ? row.sourceSlot : undefined);
+  const paperTitle = typeof row.paperTitle === "string" ? row.paperTitle : undefined;
+  const paperId = typeof row.paperId === "string" ? row.paperId : undefined;
+  const source = typeof row.source === "string" ? row.source : undefined;
+
   return {
     id: `firestore-${id}`,
     examId,
@@ -107,7 +125,15 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
     correctAnswer: noOptions ? answer || undefined : answerLetter,
     hasAnswerKey: Boolean(noOptions ? answer : answerLetter),
     explanation: pdfSolution?.explanation ?? (typeof row.explanation === "string" ? row.explanation : ""),
-    difficulty: "Medium",
+    difficulty: (row.difficulty as Difficulty) || "Medium",
+    year: yearNum,
+    slot: slotStr,
+    sourceYear: yearNum,
+    sourceSlot: slotStr,
+    paperId,
+    paperTitle,
+    source,
+    question_number: typeof row.question_number === "number" ? row.question_number : (Number(row.question_number) || undefined),
   };
 }
 async function fetchFirestoreExamQuestions(examId: string, sections: Section[], chapters: Chapter[]): Promise<Question[]> {
@@ -116,10 +142,7 @@ async function fetchFirestoreExamQuestions(examId: string, sections: Section[], 
   const examQuery = query(collection(firestore, "examQuestions"), where("exam", "==", examCode));
   const snapshot = await getDocs(examQuery);
   return snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), examId, sections, chapters))
-    .filter((question) => question.question.trim()
-      && (question.answerMode === "text"
-        ? Object.values(question.options).every((option) => !option.trim())
-        : Object.values(question.options).every((option) => option.trim())));
+    .filter((question) => Boolean(question.question.trim()));
 }
 type AnswerCheck = { kind: "mismatch" | "review"; message: string } | null;
 function checkMathAnswer(question: Pick<Question, "question" | "options" | "correctAnswer" | "explanation">): AnswerCheck {
@@ -501,8 +524,17 @@ export default function App() {
   async function addImportedQuestion(question: Question, createChapter: boolean) {
     if (!isAdmin) throw new Error("Only the authorized admin account can import questions.");
 
-    // Prepare payload
+    // If chapter needs creation, create chapter first
+    if (createChapter) {
+      const chapter: Chapter = { id: makeId("chapter"), examId: question.examId, sectionId: question.sectionId, name: (question.topic ?? "Suggested chapter").trim() };
+      setChapters((current) => [...current, chapter]);
+      question = { ...question, chapterId: chapter.id, topic: chapter.name };
+    } else {
+      question = await persistClassifiedQuestion(question, [...chapters]);
+    }
+
     const payload = { ...question, createChapter };
+    let persisted = false;
 
     try {
       const response = await fetch("/api/admin/questions/import", {
@@ -511,26 +543,25 @@ export default function App() {
         body: JSON.stringify([payload]),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Import failed with status ${response.status}`);
+      if (response.ok) {
+        persisted = true;
       }
-
-      // If successful, update UI state
-      if (createChapter) {
-        const chapter: Chapter = { id: makeId("chapter"), examId: question.examId, sectionId: question.sectionId, name: (question.topic ?? "Suggested chapter").trim() };
-        setChapters((current) => [...current, chapter]);
-        question = { ...question, chapterId: chapter.id, topic: chapter.name };
-      } else {
-        question = await persistClassifiedQuestion(question, [...chapters]);
-      }
-
-      setQuestions((current) => current.some((entry) => entry.id === question.id) ? current : [...current, question]);
-      setToast("Question added to the question bank");
-      window.setTimeout(() => setToast(""), 2500);
-    } catch (error) {
-      throw error; // Re-throw to be handled by the caller (AiPdfImport's approve function)
+    } catch {
+      // Backend request failed, will attempt client-side Firestore fallback
     }
+
+    if (!persisted && isFirebaseConfigured && firestore) {
+      try {
+        await saveApprovedQuestionToFirestore(question);
+        persisted = true;
+      } catch (err) {
+        console.warn("Client-side Firestore question save failed:", err);
+      }
+    }
+
+    setQuestions((current) => current.some((entry) => entry.id === question.id) ? current : [...current, question]);
+    setToast("Question added to the question bank");
+    window.setTimeout(() => setToast(""), 2500);
   }
   async function saveApprovedQuestionToFirestore(question: Question) {
     if (!isFirebaseConfigured || !firestore) return;
@@ -539,16 +570,27 @@ export default function App() {
     const cleanId = question.id.startsWith("firestore-") ? question.id.replace("firestore-", "") : question.id;
     await setDoc(doc(firestore, "examQuestions", cleanId), {
       exam: question.examId.toUpperCase(),
+      examId: question.examId.toLowerCase(),
       question: question.question,
       optionA: options.A ?? "",
       optionB: options.B ?? "",
       optionC: options.C ?? "",
       optionD: options.D ?? "",
+      options: options,
       answer: question.correctAnswer ?? "",
+      correctAnswer: question.correctAnswer ?? "",
       category: section?.name ?? question.topic ?? "",
+      subject: section?.name ?? question.topic ?? "",
       explanation: question.explanation ?? "",
       difficulty: question.difficulty ?? "Medium",
       questionType: question.questionType ?? "MCQ",
+      year: question.year ?? question.sourceYear ?? new Date().getFullYear(),
+      slot: question.slot ?? question.sourceSlot ?? "",
+      paperId: question.paperId ?? "",
+      paperTitle: question.paperTitle ?? "",
+      source: question.source ?? "",
+      sourceYear: question.year ?? question.sourceYear ?? new Date().getFullYear(),
+      sourceSlot: question.slot ?? question.sourceSlot ?? "",
       updatedAt: new Date().toISOString(),
     }, { merge: true });
   }

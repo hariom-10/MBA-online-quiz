@@ -35,6 +35,25 @@ export type Question = {
   tags?: string[];
   aiConfidence?: "High" | "Medium" | "Low";
   aiConfidenceReason?: string;
+  paperId?: string;
+  paperTitle?: string;
+};
+
+export type ExtractedPaper = {
+  id: string;
+  fileName: string;
+  paperTitle: string;
+  examId: string;
+  examName: string;
+  year: number;
+  slot: string;
+  extractedAt: string;
+  extractedBy: string;
+  totalQuestions: number;
+  approvedCount: number;
+  rejectedCount: number;
+  status: "Completed" | "In Review" | "Partially Approved";
+  extractedQuestions?: unknown[];
 };
 export type Attempt = {
   questionId: string;

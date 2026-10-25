@@ -32,7 +32,7 @@ function decodeHex(hex) {
   return [...bytes].map((byte) => String.fromCharCode(byte)).join("");
 }
 
-export function extractPdfText(buffer) {
+function extractPdfTextLegacy(buffer) {
   const source = buffer.toString("latin1");
   if (!source.startsWith("%PDF-")) throw new Error("Choose a valid PDF file.");
   const text = [];
@@ -59,6 +59,59 @@ export function extractPdfText(buffer) {
     if (/\bT\*/.test(content)) text.push("\n");
   }
   return text.join("").replace(/[\t ]+/g, " ").replace(/ *\n */g, "\n").trim();
+}
+
+export async function extractPdfText(buffer) {
+  try {
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const data = new Uint8Array(buffer);
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      useSystemFonts: true,
+      disableFontFace: true,
+      isEvalSupported: false,
+    });
+    const pdf = await loadingTask.promise;
+    const pageTexts = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const content = await page.getTextContent();
+      let lastY = undefined;
+      let pageStr = "";
+
+      for (const item of content.items) {
+        if (!("str" in item)) continue;
+        const text = item.str;
+        if (!text && !item.hasEOL) continue;
+
+        const currentY = item.transform ? item.transform[5] : undefined;
+        if (lastY !== undefined && currentY !== undefined && Math.abs(currentY - lastY) > 6) {
+          pageStr += "\n";
+        } else if (pageStr && !pageStr.endsWith("\n") && !pageStr.endsWith(" ") && text) {
+          pageStr += " ";
+        }
+
+        pageStr += text;
+
+        if (item.hasEOL) {
+          pageStr += "\n";
+        }
+        lastY = currentY;
+      }
+      const trimmed = pageStr.trim();
+      if (trimmed) pageTexts.push(trimmed);
+    }
+
+    const fullText = pageTexts.join("\n\n").trim();
+    if (fullText.length > 20) {
+      return fullText;
+    }
+  } catch {
+    // Fall back to stream regex parser
+  }
+
+  return extractPdfTextLegacy(buffer);
 }
 
 export function isUsablePdfText(text) {

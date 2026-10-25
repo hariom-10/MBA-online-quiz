@@ -14,6 +14,12 @@ service cloud.firestore {
       allow write: if false; 
     }
 
+    // Extracted papers records
+    match /extractedPapers/{paperId} {
+      allow read: if true;
+      allow write: if false; // Secured via admin backend endpoint
+    }
+
     match /{document=**} {
       allow read, write: if false; // Deny all other access by default
     }
