@@ -541,9 +541,19 @@ export default function App() {
               existing.question !== pq.question ||
               JSON.stringify(existing.options) !== JSON.stringify(pq.options) ||
               existing.correctAnswer !== pq.correctAnswer ||
-              existing.explanation !== pq.explanation
+              existing.explanation !== pq.explanation ||
+              existing.imageUrl !== pq.imageUrl ||
+              existing.hasDiagram !== pq.hasDiagram
             ) {
-              existingMap.set(targetId, { ...existing, ...pq, id: targetId });
+              const mergedImageUrl = pq.imageUrl || existing.imageUrl;
+              const mergedHasDiagram = Boolean(pq.hasDiagram || existing.hasDiagram || mergedImageUrl);
+              existingMap.set(targetId, {
+                ...existing,
+                ...pq,
+                id: targetId,
+                imageUrl: mergedImageUrl,
+                hasDiagram: mergedHasDiagram,
+              });
               changed = true;
             }
           } else {
@@ -855,7 +865,15 @@ export default function App() {
       let next: Question[];
       if (idx >= 0) {
         next = [...current];
-        next[idx] = { ...current[idx], ...question };
+        const existing = current[idx];
+        const mergedImageUrl = question.imageUrl || existing.imageUrl;
+        const mergedHasDiagram = Boolean(question.hasDiagram || existing.hasDiagram || mergedImageUrl);
+        next[idx] = {
+          ...existing,
+          ...question,
+          imageUrl: mergedImageUrl,
+          hasDiagram: mergedHasDiagram,
+        };
       } else {
         next = [...current, question];
       }
@@ -870,7 +888,31 @@ export default function App() {
     if (!isAdmin) throw new Error("Only the authorized admin account can import questions.");
     if (!questionsToImport.length) return;
 
-    const validQuestions = questionsToImport.filter((q) => {
+    let updatedChapters = [...chapters];
+    let chaptersAdded = false;
+    const resolvedQuestions = questionsToImport.map((q) => {
+      let chapter = updatedChapters.find((c) =>
+        c.sectionId === q.sectionId &&
+        (c.id === q.chapterId || c.name.trim().toLowerCase() === (q.topic || "").trim().toLowerCase())
+      );
+      if (!chapter && q.topic?.trim()) {
+        chapter = {
+          id: makeId("chapter"),
+          examId: q.examId,
+          sectionId: q.sectionId,
+          name: q.topic.trim(),
+        };
+        updatedChapters.push(chapter);
+        chaptersAdded = true;
+      }
+      return chapter ? { ...q, chapterId: chapter.id, topic: chapter.name } : q;
+    });
+
+    if (chaptersAdded) {
+      setChapters(updatedChapters);
+    }
+
+    const validQuestions = resolvedQuestions.filter((q) => {
       const check = validateQuestionForImport(q);
       return check.isValid;
     });
@@ -915,7 +957,15 @@ export default function App() {
         const targetId = matchedId || q.id;
         const existing = map.get(targetId);
         if (existing) {
-          map.set(targetId, { ...existing, ...q, id: targetId });
+          const mergedImageUrl = q.imageUrl || existing.imageUrl;
+          const mergedHasDiagram = Boolean(q.hasDiagram || existing.hasDiagram || mergedImageUrl);
+          map.set(targetId, {
+            ...existing,
+            ...q,
+            id: targetId,
+            imageUrl: mergedImageUrl,
+            hasDiagram: mergedHasDiagram,
+          });
         } else {
           map.set(q.id, q);
           if (q.paperId && q.question_number) {

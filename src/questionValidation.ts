@@ -1,4 +1,4 @@
-import type { Answer, Difficulty, Question } from "./model";
+import type { Answer, Chapter, Difficulty, Question, Section } from "./model";
 
 export const ALL_ANSWER_OPTIONS: Answer[] = ["A", "B", "C", "D", "E"];
 
@@ -252,3 +252,208 @@ export function evaluateStudentAnswer(question: Question, submittedAnswer: strin
 
   return false;
 }
+
+export type AIQuestion = {
+  questionNumber: number | null;
+  question: string;
+  type: string;
+  options: string[];
+  correctAnswer: string;
+  explanation: string;
+  examId: string;
+  subject: string;
+  section: string;
+  chapter: string;
+  topic: string;
+  difficulty: Difficulty;
+  tags: string[];
+  confidence: "High" | "Medium" | "Low";
+  confidenceReason: string;
+  imageUrl?: string;
+  imageAlt?: string;
+  hasDiagram?: boolean;
+};
+
+export type ReviewItem = {
+  id: string;
+  value: AIQuestion;
+  status: "pending" | "approved" | "rejected" | "failed";
+  error?: string;
+  batchText?: string;
+  duplicate: boolean;
+  edited: boolean;
+  createChapter: boolean;
+};
+
+export function checkQuestionNeedsReview(
+  item: ReviewItem,
+  sections: Section[],
+  _chapters?: Chapter[]
+): { needsReview: boolean; reason?: string } {
+  if (item.status === "failed") {
+    return { needsReview: true, reason: item.error || "Batch processing failed" };
+  }
+  if (item.duplicate) {
+    return { needsReview: true, reason: "Possible duplicate with existing question in bank" };
+  }
+  if (item.value.confidence === "Low") {
+    return { needsReview: true, reason: item.value.confidenceReason || "Low AI extraction confidence" };
+  }
+  const section = sections.find(
+    (s) => s.examId === item.value.examId && s.name.toLowerCase() === item.value.section.toLowerCase()
+  );
+  if (!section) {
+    return { needsReview: true, reason: `Unmatched section: "${item.value.section}"` };
+  }
+  const validation = validateQuestionForImport({
+    question: item.value.question,
+    options: item.value.options,
+    type: item.value.type,
+    correctAnswer: item.value.correctAnswer,
+  });
+  if (!validation.isValid || !validation.valid) {
+    return { needsReview: true, reason: validation.errors.join("; ") };
+  }
+  if (!item.value.correctAnswer || !item.value.correctAnswer.trim()) {
+    return { needsReview: true, reason: "Missing correct answer key" };
+  }
+  if (item.value.hasDiagram && !item.value.imageUrl) {
+    return { needsReview: true, reason: "Diagram / graph snippet needed" };
+  }
+  if (validation.warnings.some((w) => w.includes("incomplete") || w.includes("does not match any recognized option"))) {
+    return { needsReview: true, reason: validation.warnings.join("; ") };
+  }
+  return { needsReview: false };
+}
+
+/**
+ * Detects if a line is an option choice (e.g. (A), (1), [1], A., 1), Option 1, etc.)
+ * rather than a question stem start.
+ */
+export function isOptionLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  // Option indicators: (A)-(E), (a)-(e), (1)-(5), [A]-[E], [1]-[5]
+  if (/^\s*(?:\([1-5a-eA-E]\)|\[[1-5a-eA-E]\])\s*/i.test(trimmed)) {
+    return true;
+  }
+
+  // Explicit label: Option A, Option 1, Option (A), Option (1), Choice A, Choice 1
+  if (/^\s*(?:Option|Choice)\s*[-:]?\s*(?:\([1-5a-eA-E]\)|\[[1-5a-eA-E]\]|[1-5a-eA-E]\b)/i.test(trimmed)) {
+    return true;
+  }
+
+  // Letter options: A. , B) , C: , D -
+  if (/^\s*[a-eA-E]\s*[.)\]:-]\s+\S+/i.test(trimmed)) {
+    return true;
+  }
+
+  // Single digit option 1) to 5)
+  if (/^\s*[1-5]\s*\)\s+\S+/i.test(trimmed)) {
+    return true;
+  }
+
+  // Roman numerals: (i), (ii), (iii), (iv), (v) or i), ii)
+  if (/^\s*(?:\([ivx]+\)|[ivx]+\s*\))\s+/i.test(trimmed)) {
+    return true;
+  }
+
+  // Short 1-5 digit followed by dot/colon with typical option content (e.g. "1. 45", "2. None of these", "3. Rs. 500")
+  if (/^\s*[1-5]\s*[.:-]\s+(?:none\b|all\b|both\b|neither\b|cannot\b|\$|₹|[A-Za-z0-9/%.,+\- ]{1,45})$/i.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Smart adaptive batching: groups text into chunks of complete questions,
+ * ensuring options are NEVER split across chunk boundaries.
+ */
+export function questionChunks(text: string, maxPerChunk: number = 3, maxCharLen: number = 4000): string[] {
+  const lines = text.split(/\r?\n/).map((l) => l.trimEnd());
+  const starts: number[] = [];
+
+  // Check if document has explicit "Question X" or "Q.X" headers
+  const hasExplicitQHeaders = lines.some((line) =>
+    /^\s*(?:(?:Question|Que(?:st)?\.?|Prob(?:lem)?\.?|Q\.?|Ques\.?)\s*#?\s*\d{1,3}\b|Question\s*ID\s*:\s*\d+)/i.test(line.trim())
+  );
+
+  const directionRegex = /^\s*(?:Directions?\b|Read the following|Passage\b|Consider the following|Common Data|Instructions?\b|Caselet\b|Study the following)/i;
+
+  function isQuestionStartLine(line: string): boolean {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (isOptionLine(trimmed)) return false;
+
+    // 1. Explicit question markers (Question 1, Q.1, Q1:, Problem 1, Question ID: 123)
+    if (/^\s*(?:(?:Question|Que(?:st)?\.?|Prob(?:lem)?\.?|Q\.?|Ques\.?)\s*#?\s*\d{1,3}\b|Question\s*ID\s*:\s*\d+)/i.test(trimmed)) {
+      return true;
+    }
+
+    // 2. If document uses explicit Question headers, do not treat bare numbers as questions
+    if (hasExplicitQHeaders) {
+      return false;
+    }
+
+    // 3. For documents that only use bare numbers (e.g. "1. ", "2. "):
+    // Numbers > 5 are definitely questions (options are only 1-4 or 1-5)
+    if (/^\s*(?:[6-9]|\d{2,3})[.)\]:-]\s+\S+/.test(trimmed)) {
+      return true;
+    }
+
+    // For bare 1-5: must have substantial text (>= 25 chars) and not match option indicators
+    if (/^\s*[1-5][.)\]:-]\s+\S+/.test(trimmed) && trimmed.length >= 25) {
+      return true;
+    }
+
+    return false;
+  }
+
+  lines.forEach((line, index) => {
+    if (isQuestionStartLine(line)) starts.push(index);
+  });
+
+  let parts: string[] = [];
+  if (starts.length > 0) {
+    const boundaries: number[] = [0];
+    for (let i = 1; i < starts.length; i++) {
+      let splitPoint = starts[i];
+      for (let j = starts[i - 1] + 1; j < starts[i]; j++) {
+        if (directionRegex.test(lines[j])) {
+          splitPoint = j;
+          break;
+        }
+      }
+      boundaries.push(splitPoint);
+    }
+    boundaries.push(lines.length);
+
+    parts = boundaries.slice(0, -1).map((from, i) => lines.slice(from, boundaries[i + 1]).join("\n").trim()).filter(Boolean);
+  }
+
+  if (parts.length < 2) {
+    const paragraphs = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+    parts = paragraphs.length > 1 ? paragraphs : (text.match(/.{1,3500}(?:\s|$)/gs) ?? [text]);
+  }
+
+  const batches: string[] = [];
+  let currentBatch: string[] = [];
+  let currentLen = 0;
+
+  for (const part of parts) {
+    if (currentBatch.length >= maxPerChunk || (currentLen + part.length > maxCharLen && currentBatch.length > 0)) {
+      batches.push(currentBatch.join("\n\n"));
+      currentBatch = [];
+      currentLen = 0;
+    }
+    currentBatch.push(part);
+    currentLen += part.length;
+  }
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch.join("\n\n"));
+  }
+  return batches.length ? batches : [text];
+}
+

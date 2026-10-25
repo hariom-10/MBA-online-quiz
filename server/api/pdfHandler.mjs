@@ -23,6 +23,7 @@ const questionSchema = {
           topic: { type: "string" },
           difficulty: { type: "string" },
           tags: { type: "array", items: { type: "string" } },
+          hasDiagram: { type: "boolean" },
           confidence: { type: "string", enum: ["High", "Medium", "Low"] },
           confidenceReason: { type: "string" }
         },
@@ -62,7 +63,12 @@ export async function analyze(body) {
           config: {
             systemInstruction: "Extract every complete question in the provided text. Return only questions present in the text. " +
               "CRITICAL RULE FOR QUESTION STEM: Some questions have long passages, multiple introductory paragraphs, conditions, rules, tables, or scenarios (such as student-switching conditions, stream distributions, or data tables) before the question sentence. You MUST preserve and include the ENTIRE question stem—including all introductory paragraphs, conditions, background info, tables, and the actual question sentence—in the 'question' field. NEVER omit the passage or conditions. NEVER extract only the final sentence. Preserve readable paragraph breaks with double newlines (\\n\\n). " +
-              "CRITICAL RULE FOR OPTIONS: Support questions with any number of options (4 options, 5 options, etc.). If the original question has five options (Option 1 to Option 5, or A to E, including 'None of the remaining options is correct'), you MUST extract all 5 options in the 'options' array. Never drop or omit the 5th option. For questions with options A, B, C, D, E, set 'correctAnswer' to the corresponding option letter (A, B, C, D, or E). " +
+              "CRITICAL RULE FOR OPTIONS EXTRACTION & QUESTION ISOLATION: " +
+              "1. STRICT OPTION ATTRIBUTION: Every multiple-choice question has its own options (formatted as A, B, C, D, E or (1), (2), (3), (4), (5) or 1., 2., 3., 4.). You MUST extract options STRICTLY under the question they belong to. NEVER shift, transfer, or bleed options to another question! Under NO circumstances should options of Question N be attached to Question N+1 or Question N-1. " +
+              "2. EXTRACT ALL OPTIONS WITHOUT OMISSION: Never drop, truncate, or skip options. If a question has 4 options, extract all 4 in the 'options' array. If it has 5 options, extract all 5. Strip leading labels like '(A)', '(1)', 'Option 1:', '[1]' from the text of each option so only the clean option content remains, but preserve every choice in correct sequence. " +
+              "3. TITA / NUMERICAL QUESTIONS (NO OPTIONS): If a question has no multiple choice options in the source text (it is a Type In The Answer / TITA / Numerical / Short Answer question), set 'options' to an EMPTY array []. NEVER steal or take options from neighboring questions. " +
+              "4. NUMBERED OPTIONS ARE NOT QUESTIONS: Text formatted as (1), (2), (3), (4) or 1), 2), 3), 4) under a question are multiple choice options, NOT separate question numbers. " +
+              "5. DIAGRAM DETECTION: If a question references a chart, graph, figure, Venn diagram, bar chart, pie chart, or geometric drawing (e.g., 'refer to the figure', 'as shown in the graph', 'in the given diagram'), set 'hasDiagram' to true. " +
               "Use the provided exam, subject/section and chapter catalog; choose exact existing IDs/names where suitable. If a chapter does not match, put a concise suggested chapter name. Never invent a subject or section. Use examId from the catalog. Preserve source answer key if present; otherwise solve carefully. Generate concise, instructional explanations. For uncertainty use Low/Medium confidence and explain why. OCR may confuse characters (for example 1O/10, O/0, x/?) or break mathematical expressions: normalize only when the intended meaning is clear from context. Do not guess missing or ambiguous wording; preserve it and set Low confidence with a short review reason. Text marked as low-confidence OCR requires extra scrutiny.",
             responseMimeType: "application/json",
             responseJsonSchema: questionSchema,

@@ -82,7 +82,7 @@ export async function handleApi(req, res) {
         if (req.body && typeof req.body === "object") {
           paper = req.body;
         } else {
-          const raw = (await bodyBuffer(req, 2 * 1024 * 1024)).toString("utf8");
+          const raw = (await bodyBuffer(req, 25 * 1024 * 1024)).toString("utf8");
           paper = raw ? JSON.parse(raw) : {};
         }
         if (!paper || !paper.id) return json(res, 400, { error: "Invalid paper payload." }), true;
@@ -114,7 +114,7 @@ export async function handleApi(req, res) {
       if (req.body && Array.isArray(req.body)) {
         questions = req.body;
       } else {
-        const raw = (await bodyBuffer(req, 5 * 1024 * 1024)).toString("utf8");
+        const raw = (await bodyBuffer(req, 25 * 1024 * 1024)).toString("utf8");
         questions = raw ? JSON.parse(raw) : (Array.isArray(req.body) ? req.body : []);
       }
       if (!Array.isArray(questions) || questions.length === 0 || questions.length > 500) {
@@ -187,6 +187,9 @@ export async function handleApi(req, res) {
           source: q.source || q.sourceUrl || "",
           sourceYear: Number(q.year || q.sourceYear) || (new Date().getFullYear()),
           sourceSlot: String(q.slot || q.sourceSlot || ""),
+          imageUrl: q.imageUrl || "",
+          imageAlt: q.imageAlt || "",
+          hasDiagram: Boolean(q.hasDiagram || q.imageUrl),
           importedAt: new Date().toISOString(),
           status: "published",
         };

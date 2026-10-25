@@ -4,7 +4,15 @@ import {
   RefreshCw, Sparkles, Trash2, Upload, X, Layers, Crop, Image as ImageIcon
 } from "lucide-react";
 import type { Answer, Chapter, Difficulty, Exam, ExtractedPaper, Question, Section } from "./model";
-import { getQuestionOptionKeys, normalizeOptionKey, validateQuestionForImport } from "./questionValidation";
+import {
+  getQuestionOptionKeys,
+  normalizeOptionKey,
+  checkQuestionNeedsReview,
+  questionChunks,
+  type AIQuestion,
+  type ReviewItem,
+} from "./questionValidation";
+export { checkQuestionNeedsReview, questionChunks, type AIQuestion, type ReviewItem };
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { runAiWithFailover } from "./aiApiKeyStore";
@@ -16,93 +24,7 @@ import { collection, deleteDoc, doc, getDocs, setDoc } from "firebase/firestore"
 // Set the pdf.js worker source for client-side PDF text extraction
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
-export type AIQuestion = {
-  questionNumber: number | null;
-  question: string;
-  type: string;
-  options: string[];
-  correctAnswer: string;
-  explanation: string;
-  examId: string;
-  subject: string;
-  section: string;
-  chapter: string;
-  topic: string;
-  difficulty: Difficulty;
-  tags: string[];
-  confidence: "High" | "Medium" | "Low";
-  confidenceReason: string;
-  imageUrl?: string;
-  imageAlt?: string;
-  hasDiagram?: boolean;
-};
-
-export type ReviewItem = {
-  id: string;
-  value: AIQuestion;
-  status: "pending" | "approved" | "rejected" | "failed";
-  error?: string;
-  batchText?: string;
-  duplicate: boolean;
-  edited: boolean;
-  createChapter: boolean;
-};
-
 const PAPERS_STORAGE_KEY = "mba-extracted-papers-record";
-
-// Smart adaptive batching: groups by detected question boundaries or ~3500 chars
-function questionChunks(text: string): string[] {
-  const lines = text.split(/\r?\n/).map((l) => l.trimEnd());
-  const starts: number[] = [];
-  const qRegex = /^\s*(?:(?:(?:Q(?:uestion|ue)?\.?|Prob(?:lem)?\.?)\s*)?\d{1,3}[.)\]:-]|\(\d{1,3}\)\s*|\bQuestion\s+\d{1,3}\b)/i;
-  const directionRegex = /^\s*(?:Directions?|Read the following|Passage|Consider the following|Common Data|Instructions?|Caselet|Study the following)/i;
-
-  lines.forEach((line, index) => {
-    if (qRegex.test(line)) starts.push(index);
-  });
-
-  let parts: string[] = [];
-  if (starts.length > 0) {
-    // Preserve any preambles, introductory passages, or direction sets by keeping them attached
-    // to their respective question blocks.
-    const boundaries: number[] = [0];
-    for (let i = 1; i < starts.length; i++) {
-      let splitPoint = starts[i];
-      for (let j = starts[i - 1] + 1; j < starts[i]; j++) {
-        if (directionRegex.test(lines[j])) {
-          splitPoint = j;
-          break;
-        }
-      }
-      boundaries.push(splitPoint);
-    }
-    boundaries.push(lines.length);
-
-    parts = boundaries.slice(0, -1).map((from, i) => lines.slice(from, boundaries[i + 1]).join("\n").trim()).filter(Boolean);
-  }
-  if (parts.length < 2) {
-    const paragraphs = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
-    parts = paragraphs.length > 1 ? paragraphs : (text.match(/.{1,3500}(?:\s|$)/gs) ?? [text]);
-  }
-
-  const batches: string[] = [];
-  let currentBatch: string[] = [];
-  let currentLen = 0;
-
-  for (const part of parts) {
-    if (currentBatch.length >= 3 || (currentLen + part.length > 3500 && currentBatch.length > 0)) {
-      batches.push(currentBatch.join("\n\n"));
-      currentBatch = [];
-      currentLen = 0;
-    }
-    currentBatch.push(part);
-    currentLen += part.length;
-  }
-  if (currentBatch.length > 0) {
-    batches.push(currentBatch.join("\n\n"));
-  }
-  return batches.length ? batches : [text];
-}
 
 function normalize(text: string) {
   return text.toLocaleLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
@@ -212,7 +134,12 @@ async function extractPdfTextClientSide(
 const CLIENT_SYSTEM_INSTRUCTION =
   "Extract every complete question in the provided text. Return only questions present in the text. " +
   "CRITICAL RULE FOR QUESTION STEM: Some questions have long passages, multiple introductory paragraphs, conditions, rules, tables, or scenarios (such as student-switching conditions, stream distributions, or data tables) before the question sentence. You MUST preserve and include the ENTIRE question stem—including all introductory paragraphs, conditions, background info, tables, and the actual question sentence—in the 'question' field. NEVER omit the passage or conditions. NEVER extract only the final sentence. Preserve readable paragraph breaks with double newlines (\\n\\n). " +
-  "CRITICAL RULE FOR OPTIONS: Support questions with any number of options (4 options, 5 options, etc.). If the original question has five options (Option 1 to Option 5, or A to E, including 'None of the remaining options is correct'), you MUST extract all 5 options in the 'options' array. Never drop or omit the 5th option. For questions with options A, B, C, D, E, set 'correctAnswer' to the corresponding option letter (A, B, C, D, or E). " +
+  "CRITICAL RULE FOR OPTIONS EXTRACTION & QUESTION ISOLATION: " +
+  "1. STRICT OPTION ATTRIBUTION: Every multiple-choice question has its own options (formatted as A, B, C, D, E or (1), (2), (3), (4), (5) or 1., 2., 3., 4.). You MUST extract options STRICTLY under the question they belong to. NEVER shift, transfer, or bleed options to another question! Under NO circumstances should options of Question N be attached to Question N+1 or Question N-1. " +
+  "2. EXTRACT ALL OPTIONS WITHOUT OMISSION: Never drop, truncate, or skip options. If a question has 4 options, extract all 4 in the 'options' array. If it has 5 options, extract all 5. Strip leading labels like '(A)', '(1)', 'Option 1:', '[1]' from the text of each option so only the clean option content remains, but preserve every choice in correct sequence. " +
+  "3. TITA / NUMERICAL QUESTIONS (NO OPTIONS): If a question has no multiple choice options in the source text (it is a Type In The Answer / TITA / Numerical / Short Answer question), set 'options' to an EMPTY array []. NEVER steal or take options from neighboring questions. " +
+  "4. NUMBERED OPTIONS ARE NOT QUESTIONS: Text formatted as (1), (2), (3), (4) or 1), 2), 3), 4) under a question are multiple choice options, NOT separate question numbers. " +
+  "5. DIAGRAM DETECTION: If a question references a chart, graph, figure, Venn diagram, bar chart, pie chart, or geometric drawing (e.g., 'refer to the figure', 'as shown in the graph', 'in the given diagram'), set 'hasDiagram' to true. " +
   "Use the provided exam, subject/section and chapter catalog; choose exact existing IDs/names where suitable. " +
   "If a chapter does not match, put a concise suggested chapter name. Never invent a subject or section. " +
   "Use examId from the catalog. Preserve source answer key if present; otherwise solve carefully. " +
@@ -241,6 +168,7 @@ const CLIENT_QUESTION_SCHEMA = {
           topic: { type: "string" },
           difficulty: { type: "string", enum: ["Easy", "Medium", "Hard"] },
           tags: { type: "array", items: { type: "string" } },
+          hasDiagram: { type: "boolean" },
           confidence: { type: "string", enum: ["High", "Medium", "Low"] },
           confidenceReason: { type: "string" },
         },
@@ -311,41 +239,6 @@ function guessPaperInfo(fileName: string, examsList: Exam[]) {
   const paperTitle = `${examObj?.name || "Exam"} ${year} ${slot}`.trim() || cleanName;
 
   return { examId, year, slot, paperTitle };
-}
-
-export function checkQuestionNeedsReview(
-  item: ReviewItem,
-  sections: Section[],
-  _chapters: Chapter[]
-): { needsReview: boolean; reason?: string } {
-  if (item.status === "failed") {
-    return { needsReview: true, reason: item.error || "Batch processing failed" };
-  }
-  if (item.duplicate) {
-    return { needsReview: true, reason: "Possible duplicate with existing question in bank" };
-  }
-  if (item.value.confidence === "Low") {
-    return { needsReview: true, reason: item.value.confidenceReason || "Low AI extraction confidence" };
-  }
-  const section = sections.find(
-    (s) => s.examId === item.value.examId && s.name.toLowerCase() === item.value.section.toLowerCase()
-  );
-  if (!section) {
-    return { needsReview: true, reason: `Unmatched section: "${item.value.section}"` };
-  }
-  const validation = validateQuestionForImport({
-    question: item.value.question,
-    options: item.value.options,
-    type: item.value.type,
-    correctAnswer: item.value.correctAnswer,
-  });
-  if (!validation.valid) {
-    return { needsReview: true, reason: validation.errors.join("; ") };
-  }
-  if (item.value.hasDiagram && !item.value.imageUrl) {
-    return { needsReview: true, reason: "Diagram / graph snippet needed" };
-  }
-  return { needsReview: false };
 }
 
 export function AiPdfImport({
@@ -436,6 +329,25 @@ export function AiPdfImport({
         // LocalStorage fallback already loaded
       });
   }, []);
+
+  const [reviewFilter, setReviewFilter] = useState<"needsReview" | "processed" | "all">("needsReview");
+
+  const itemsNeedingReview = useMemo(() => {
+    return items.filter((item) => {
+      if (item.status === "approved" || item.status === "rejected") return false;
+      return item.status === "failed" || checkQuestionNeedsReview(item, sections, chapters).needsReview;
+    });
+  }, [items, sections, chapters]);
+
+  const processedItems = useMemo(() => {
+    return items.filter((item) => item.status === "approved");
+  }, [items]);
+
+  const displayedItems = useMemo(() => {
+    if (reviewFilter === "needsReview") return itemsNeedingReview;
+    if (reviewFilter === "processed") return processedItems;
+    return items;
+  }, [reviewFilter, itemsNeedingReview, processedItems, items]);
 
   const pending = items.filter((item) => item.status === "pending");
   const detectedSubjects = [...new Set(items.map((item) => item.value.subject).filter(Boolean))];
@@ -770,9 +682,62 @@ export function AiPdfImport({
         setError("No questions were detected in this PDF. Please verify that the PDF contains selectable text or clear scan quality.");
       }
 
+      const currentPaperId = paperId || `paper_${paperExamId}_${paperYear}_${paperSlot.replace(/\s+/g, "").toLowerCase()}_${Date.now().toString(36)}`;
+      if (!paperId) setPaperId(currentPaperId);
+
+      // Separate questions needing review from questions that can be processed by default
+      const autoApproveBatch: { item: ReviewItem; model: Question }[] = [];
+      for (const item of result) {
+        if (item.status === "failed") continue;
+        const reviewCheck = checkQuestionNeedsReview(item, sections, chapters);
+        if (!reviewCheck.needsReview) {
+          const section = existingFor(item);
+          if (section) {
+            const matchingChap = targetChapter(item);
+            if (!matchingChap && item.value.chapter) {
+              item.createChapter = true;
+            }
+            const qModel = questionToModel(item.value, section, matchingChap, `import-${crypto.randomUUID()}`, {
+              paperId: currentPaperId,
+              paperTitle: paperTitle.trim() || file.name || "Exam Paper",
+              year: paperYear,
+              slot: paperSlot,
+              fileName: file.name,
+            });
+            autoApproveBatch.push({ item, model: qModel });
+          }
+        }
+      }
+
+      // Automatically process verified questions by default
+      if (autoApproveBatch.length > 0) {
+        setProgress((current) => ({
+          ...current,
+          stage: "ai",
+          label: `Processing and adding ${autoApproveBatch.length} verified question(s) by default...`,
+        }));
+        try {
+          if (onApproveBatch) {
+            await onApproveBatch(autoApproveBatch.map((b) => b.model));
+          } else {
+            for (const b of autoApproveBatch) {
+              await onApprove(b.model, b.item.createChapter && !targetChapter(b.item));
+            }
+          }
+          for (const b of autoApproveBatch) {
+            b.item.status = "approved";
+          }
+        } catch (approvalErr) {
+          console.warn("Auto-approval batch warning:", approvalErr);
+        }
+      }
+
+      setItems([...result]);
+      setReviewFilter("needsReview");
+
       // Automatically maintain record of this extracted paper
       const currentPaperRecord: ExtractedPaper = {
-        id: paperId || `paper_${paperExamId}_${paperYear}_${paperSlot.replace(/\s+/g, "").toLowerCase()}_${Date.now().toString(36)}`,
+        id: currentPaperId,
         fileName: file.name,
         paperTitle: paperTitle.trim() || file.name.replace(/\.pdf$/i, ""),
         examId: paperExamId,
@@ -782,9 +747,14 @@ export function AiPdfImport({
         extractedAt: new Date().toISOString(),
         extractedBy: importedBy || "Administrator",
         totalQuestions: validCount,
-        approvedCount: 0,
+        approvedCount: autoApproveBatch.length,
         rejectedCount: 0,
-        status: "In Review",
+        status:
+          autoApproveBatch.length === validCount && validCount > 0
+            ? "Completed"
+            : autoApproveBatch.length > 0
+            ? "Partially Approved"
+            : "In Review",
         extractedQuestions: result.map((r) => r.value),
       };
 
@@ -797,7 +767,11 @@ export function AiPdfImport({
   }
 
   function update(id: string, changes: Partial<ReviewItem["value"]>) {
-    setItems((current) => current.map((entry) => entry.id === id ? { ...entry, value: { ...entry.value, ...changes }, edited: true } : entry));
+    setItems((current) => {
+      const next = current.map((entry) => (entry.id === id ? { ...entry, value: { ...entry.value, ...changes }, edited: true } : entry));
+      updatePaperRecordStats(next);
+      return next;
+    });
   }
 
   function mark(id: string, status: ReviewItem["status"]) {
@@ -837,6 +811,7 @@ export function AiPdfImport({
       approvedCount,
       rejectedCount,
       status,
+      extractedQuestions: currentItems.map((r) => r.value),
     };
 
     void persistPaperRecord(updated);
@@ -894,7 +869,8 @@ export function AiPdfImport({
   async function approveAll() {
     setError("");
     const batchItems: { item: ReviewItem; model: Question }[] = [];
-    for (const item of pending) {
+    const candidates = reviewFilter === "needsReview" ? itemsNeedingReview : pending;
+    for (const item of candidates) {
       if (item.duplicate || item.status === "failed" || item.value.confidence === "Low") continue;
       const section = existingFor(item);
       if (!section) continue;
@@ -938,17 +914,31 @@ export function AiPdfImport({
       const reviewItems: ReviewItem[] = (paper.extractedQuestions as AIQuestion[]).map((q) => {
         const section = sections.find((entry) => entry.examId === q.examId && entry.name.toLowerCase() === q.section.toLowerCase());
         const chapter = chapters.find((entry) => entry.sectionId === section?.id && entry.name.toLowerCase() === q.chapter.toLowerCase());
-        const same = questions.some((existingQ) => normalize(existingQ.question) === normalize(q.question));
+        const matchingExistingQ = questions.find(
+          (existingQ) =>
+            (paper.id && existingQ.paperId === paper.id && existingQ.question_number === q.questionNumber) ||
+            normalize(existingQ.question) === normalize(q.question)
+        );
+        const resolvedImageUrl = q.imageUrl || matchingExistingQ?.imageUrl;
+        const resolvedHasDiagram = Boolean(q.hasDiagram || matchingExistingQ?.hasDiagram || resolvedImageUrl);
         return {
           id: crypto.randomUUID(),
-          value: q,
-          status: "pending",
-          duplicate: same,
+          value: {
+            ...q,
+            imageUrl: resolvedImageUrl,
+            hasDiagram: resolvedHasDiagram,
+          },
+          status: matchingExistingQ ? ("approved" as const) : ("pending" as const),
+          duplicate: Boolean(matchingExistingQ),
           edited: false,
           createChapter: !chapter && Boolean(q.chapter),
         };
       });
       setItems(reviewItems);
+      const hasReviewNeeded = reviewItems.some((item) =>
+        item.status === "pending" && checkQuestionNeedsReview(item, sections, chapters).needsReview
+      );
+      setReviewFilter(hasReviewNeeded ? "needsReview" : "all");
     }
     setActiveTab("extract");
   }
@@ -1198,8 +1188,8 @@ export function AiPdfImport({
                 </div>
                 <div className="import-summary-grid">
                   <span>Successfully analyzed <b>{items.filter((item) => item.status !== "failed").length}</b></span>
-                  <span>Added to bank <b>{items.filter((item) => item.status === "approved").length}</b></span>
-                  <span>Needs review <b>{pending.length}</b></span>
+                  <span>Processed by default <b>{processedItems.length}</b></span>
+                  <span>Needs review <b>{itemsNeedingReview.length}</b></span>
                   <span>Rejected <b>{items.filter((item) => item.status === "rejected").length}</b></span>
                   <span>Failed <b>{items.filter((item) => item.status === "failed").length}</b></span>
                   <span>Possible duplicates <b>{duplicates}</b></span>
@@ -1219,10 +1209,10 @@ export function AiPdfImport({
                   <button
                     type="button"
                     className="button button-primary"
-                    disabled={!pending.length}
+                    disabled={!itemsNeedingReview.length}
                     onClick={() => void approveAll()}
                   >
-                    Approve all valid questions ({pending.length})
+                    Approve all valid questions ({itemsNeedingReview.length})
                   </button>
                 </div>
               </section>
@@ -1230,41 +1220,126 @@ export function AiPdfImport({
               <section className="import-question-list">
                 <div className="section-heading">
                   <div>
-                    <h2>Review extracted questions</h2>
-                    <p>Review classifications, correct answers, and explanations before adding to the bank.</p>
+                    <h2>
+                      {reviewFilter === "needsReview"
+                        ? "Questions Needing Review"
+                        : reviewFilter === "processed"
+                        ? "Questions Processed by Default"
+                        : "All Extracted Questions"}
+                    </h2>
+                    <p>
+                      {reviewFilter === "needsReview"
+                        ? "Only questions flagged for review (e.g. low confidence, diagram needed, unmatched section, or duplicates) are shown here."
+                        : reviewFilter === "processed"
+                        ? "These questions were validated and automatically approved into your question bank."
+                        : "Full catalog of questions extracted from this PDF."}
+                    </p>
                   </div>
                 </div>
 
-                {items.map((entry, index) => {
-                  const item = entry.value;
-                  const section = existingFor(entry);
-                  const matchingChapter = targetChapter(entry);
-                  const optionString = item.options.join("\n");
+                <div className="review-filter-bar">
+                  <div className="review-filter-tabs" role="tablist">
+                    <button
+                      type="button"
+                      className={`review-filter-btn ${reviewFilter === "needsReview" ? "active" : ""}`}
+                      onClick={() => setReviewFilter("needsReview")}
+                    >
+                      Needs Review
+                      <span className={`filter-count-badge ${itemsNeedingReview.length > 0 ? "filter-count-alert" : ""}`}>
+                        {itemsNeedingReview.length}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`review-filter-btn ${reviewFilter === "processed" ? "active" : ""}`}
+                      onClick={() => setReviewFilter("processed")}
+                    >
+                      Processed by Default
+                      <span className="filter-count-badge">{processedItems.length}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`review-filter-btn ${reviewFilter === "all" ? "active" : ""}`}
+                      onClick={() => setReviewFilter("all")}
+                    >
+                      All Extracted
+                      <span className="filter-count-badge">{items.length}</span>
+                    </button>
+                  </div>
+                </div>
 
-                  return (
-                    <article className="import-question-card" key={entry.id}>
-                      <header>
-                        <div>
-                          <span className="eyebrow">QUESTION {item.questionNumber ?? index + 1}</span>
-                          <span className={`confidence-tag confidence-${item.confidence.toLowerCase()}`}>
-                            {item.confidence} confidence
+                {displayedItems.length === 0 ? (
+                  <div className="empty-review-state">
+                    <Check size={28} color="#10b981" />
+                    <h3>
+                      {reviewFilter === "needsReview"
+                        ? "No Questions Need Review"
+                        : reviewFilter === "processed"
+                        ? "No Questions Processed by Default"
+                        : "No Questions Detected"}
+                    </h3>
+                    <p>
+                      {reviewFilter === "needsReview"
+                        ? processedItems.length > 0
+                          ? `All ${processedItems.length} valid question(s) were processed by default and added directly to your question bank.`
+                          : "All questions in this paper have been reviewed."
+                        : reviewFilter === "processed"
+                        ? "Questions requiring review have not been auto-approved yet."
+                        : "Upload a PDF above to extract questions."}
+                    </p>
+                    {reviewFilter === "needsReview" && processedItems.length > 0 && (
+                      <button
+                        type="button"
+                        className="button button-outline"
+                        onClick={() => setReviewFilter("processed")}
+                      >
+                        View {processedItems.length} Auto-Processed Question(s)
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  displayedItems.map((entry, index) => {
+                    const item = entry.value;
+                    const section = existingFor(entry);
+                    const matchingChapter = targetChapter(entry);
+                    const optionString = item.options.join("\n");
+                    const reviewCheck = checkQuestionNeedsReview(entry, sections, chapters);
+
+                    return (
+                      <article className="import-question-card" key={entry.id}>
+                        <header>
+                          <div>
+                            <span className="eyebrow">QUESTION {item.questionNumber ?? index + 1}</span>
+                            <span className={`confidence-tag confidence-${item.confidence.toLowerCase()}`}>
+                              {item.confidence} confidence
+                            </span>
+                            <span className="paper-tag">{paperTitle}</span>
+                          </div>
+                          <span
+                            className={`status-pill ${
+                              entry.status === "approved"
+                                ? "status-approved"
+                                : entry.status === "rejected"
+                                ? "status-rejected"
+                                : entry.status === "failed"
+                                ? "status-wrong"
+                                : ""
+                            }`}
+                          >
+                            {entry.status === "approved"
+                              ? "Auto-Processed & Added"
+                              : entry.status === "pending"
+                              ? "Needs review"
+                              : entry.status}
                           </span>
-                          <span className="paper-tag">{paperTitle}</span>
-                        </div>
-                        <span
-                          className={`status-pill ${
-                            entry.status === "approved"
-                              ? "status-approved"
-                              : entry.status === "rejected"
-                              ? "status-rejected"
-                              : entry.status === "failed"
-                              ? "status-wrong"
-                              : ""
-                          }`}
-                        >
-                          {entry.status === "pending" ? "Needs review" : entry.status}
-                        </span>
-                      </header>
+                        </header>
+
+                        {entry.status === "pending" && reviewCheck.needsReview && reviewCheck.reason && (
+                          <div className="review-reason-banner">
+                            <AlertCircle size={15} />
+                            <span><b>Needs Review:</b> {reviewCheck.reason}</span>
+                          </div>
+                        )}
 
                       {entry.duplicate && (
                         <div className="duplicate-warning">
@@ -1488,11 +1563,26 @@ export function AiPdfImport({
                               </button>
                             </div>
                           )}
+
+                          {entry.status === "approved" && (
+                            <div className="import-card-actions">
+                              <span className="auto-approved-badge">
+                                <Check size={14} /> Processed by default &amp; added to question bank
+                              </span>
+                              <button
+                                type="button"
+                                className="button button-quiet"
+                                onClick={() => mark(entry.id, "pending")}
+                              >
+                                Reopen for Review
+                              </button>
+                            </div>
+                          )}
                         </>
                       )}
                     </article>
                   );
-                })}
+                }))}
               </section>
             </>
           )}
