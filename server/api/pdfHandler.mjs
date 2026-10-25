@@ -36,45 +36,54 @@ const questionSchema = {
 export async function analyze(body) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
   if (!apiKey) throw new Error("AI service is not configured. Please contact the system administrator.");
-  let targetModel = (process.env.GEMINI_MODEL || process.env.VITE_GEMINI_MODEL || "gemini-2.5-flash").trim();
-  if (!targetModel || targetModel.includes("3.6") || targetModel.includes("3.8") || targetModel.includes("flash-medium")) {
-    targetModel = "gemini-2.5-flash";
+  let targetModel = (process.env.GEMINI_MODEL || process.env.VITE_GEMINI_MODEL || "gemini-3.8-flash").trim();
+  if (targetModel.includes("1.5") || targetModel.includes("2.0") || targetModel.includes("2.5")) {
+    targetModel = "gemini-3.8-flash";
   }
 
   const candidateModels = Array.from(new Set([
     targetModel,
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash",
   ]));
 
   const ai = new GoogleGenAI({ apiKey });
   let lastError = null;
 
   for (const m of candidateModels) {
-    try {
-      const response = await ai.models.generateContent({
-        model: m,
-        contents: JSON.stringify({ catalog: body.catalog, text: body.text, batchNumber: body.batchNumber }),
-        config: {
-          systemInstruction: "Extract every complete question in the provided text. Return only questions present in the text. Use the provided exam, subject/section and chapter catalog; choose exact existing IDs/names where suitable. If a chapter does not match, put a concise suggested chapter name. Never invent a subject or section. Use examId from the catalog. Preserve source answer key if present; otherwise solve carefully. Generate concise, instructional explanations. For uncertainty use Low/Medium confidence and explain why. Keep each question self-contained and include options exactly. OCR may confuse characters (for example 1O/10, O/0, x/?) or break mathematical expressions: normalize only when the intended meaning is clear from context. Do not guess missing or ambiguous wording; preserve it and set Low confidence with a short review reason. Text marked as low-confidence OCR requires extra scrutiny.",
-          responseMimeType: "application/json",
-          responseJsonSchema: questionSchema,
-        },
-      });
-      if (!response.text) throw new Error("Empty Gemini response.");
-      const parsed = JSON.parse(response.text);
-      if (!Array.isArray(parsed.questions)) throw new Error("Gemini response did not contain a question list.");
-      return parsed;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      lastError = error;
-      const isTemporary = /503|high demand|unavailable|capacity|429|exhausted|quota|404|not found/i.test(msg);
-      if (isTemporary) {
-        console.warn(`[ai-import] Model ${m} unavailable (${msg}), attempting next stable model in pool...`);
-        continue;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: m,
+          contents: JSON.stringify({ catalog: body.catalog, text: body.text, batchNumber: body.batchNumber }),
+          config: {
+            systemInstruction: "Extract every complete question in the provided text. Return only questions present in the text. Use the provided exam, subject/section and chapter catalog; choose exact existing IDs/names where suitable. If a chapter does not match, put a concise suggested chapter name. Never invent a subject or section. Use examId from the catalog. Preserve source answer key if present; otherwise solve carefully. Generate concise, instructional explanations. For uncertainty use Low/Medium confidence and explain why. Keep each question self-contained and include options exactly. OCR may confuse characters (for example 1O/10, O/0, x/?) or break mathematical expressions: normalize only when the intended meaning is clear from context. Do not guess missing or ambiguous wording; preserve it and set Low confidence with a short review reason. Text marked as low-confidence OCR requires extra scrutiny.",
+            responseMimeType: "application/json",
+            responseJsonSchema: questionSchema,
+          },
+        });
+        if (!response.text) throw new Error("Empty Gemini response.");
+        const parsed = JSON.parse(response.text);
+        if (!Array.isArray(parsed.questions)) throw new Error("Gemini response did not contain a question list.");
+        return parsed;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        lastError = error;
+        const isTemporary = /503|high demand|unavailable|capacity|429|exhausted|quota|timeout/i.test(msg);
+        if (isTemporary && attempt === 1) {
+          console.warn(`[ai-import] Model ${m} busy (attempt ${attempt}), retrying in 1200ms...`);
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+        if (isTemporary || /404|not found|not supported/i.test(msg)) {
+          console.warn(`[ai-import] Model ${m} unavailable (${msg}), attempting next candidate model...`);
+          break;
+        }
+        throw error;
       }
-      break;
     }
   }
 

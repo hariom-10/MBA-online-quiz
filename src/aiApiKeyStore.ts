@@ -19,22 +19,22 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
   gemini: {
     name: "Google Gemini",
     keyUrl: "https://aistudio.google.com/app/apikey",
-    defaultModel: "gemini-2.5-flash",
+    defaultModel: "gemini-3.8-flash",
     models: [
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
-      "gemini-2.5-pro",
-      "gemini-1.5-pro",
+      "gemini-3.8-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3-flash",
     ],
   },
   openrouter: {
     name: "OpenRouter",
     keyUrl: "https://openrouter.ai/keys",
-    defaultModel: "google/gemini-2.5-flash",
+    defaultModel: "google/gemini-3.8-flash",
     models: [
-      "google/gemini-2.5-flash",
-      "google/gemini-2.0-flash-exp:free",
+      "google/gemini-3.8-flash",
+      "google/gemini-3.6-flash",
       "openai/gpt-4o-mini",
       "anthropic/claude-3.5-haiku",
       "meta-llama/llama-3.3-70b-instruct",
@@ -50,16 +50,16 @@ export const PROVIDER_PRESETS: Record<AiProvider, { name: string; keyUrl: string
 };
 
 export function normalizeModelName(model: string | undefined, provider: AiProvider): string {
-  if (!model) return provider === "openrouter" ? "google/gemini-2.5-flash" : "gemini-2.5-flash";
+  if (!model?.trim()) return provider === "openrouter" ? "google/gemini-3.8-flash" : "gemini-3.8-flash";
   const m = model.trim();
   if (provider === "gemini") {
-    if (m === "gemini-3.6-flash" || m === "gemini-3.8-flash" || m.includes("3.6") || m.includes("3.8") || m.includes("flash-medium")) {
-      return "gemini-2.5-flash";
+    // If legacy retired models are provided, upgrade to supported stable flash
+    if (m.includes("1.5") || m.includes("2.0") || m.includes("2.5") || m.includes("pro-vision")) {
+      return "gemini-3.8-flash";
     }
-    if (m.includes("2.5")) return "gemini-2.5-flash";
   } else if (provider === "openrouter") {
-    if (m.includes("3.6") || m.includes("3.8")) {
-      return "google/gemini-2.5-flash";
+    if (m.includes("1.5") || m.includes("2.0") || m.includes("2.5")) {
+      return "google/gemini-3.8-flash";
     }
   }
   return m;
@@ -256,39 +256,48 @@ export async function callAiApi(
     const ai = new GoogleGenAI({ apiKey: secretKey });
     const candidateModels = Array.from(new Set([
       targetModel,
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
+      "gemini-3.8-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3-flash",
     ]));
 
     let lastError: Error | null = null;
     for (const m of candidateModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: m,
-          contents: userPrompt,
-          config: {
-            systemInstruction,
-            responseMimeType: "application/json",
-            responseJsonSchema: responseSchema,
-            maxOutputTokens: 8192,
-          },
-        });
-        if (response.text) {
-          if (m !== targetModel) {
-            console.info(`[AI Runner] Succeeded with fallback model: ${m} (${targetModel} had high demand / temporary error)`);
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const response = await ai.models.generateContent({
+            model: m,
+            contents: userPrompt,
+            config: {
+              systemInstruction,
+              responseMimeType: "application/json",
+              responseJsonSchema: responseSchema,
+              maxOutputTokens: 8192,
+            },
+          });
+          if (response.text) {
+            if (m !== targetModel) {
+              console.info(`[AI Runner] Succeeded with alternative model: ${m} (${targetModel} had high demand / temporary error)`);
+            }
+            return response.text;
           }
-          return response.text;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          lastError = err instanceof Error ? err : new Error(msg);
+          const isTemporary = /503|high demand|unavailable|capacity|429|exhausted|quota|timeout/i.test(msg);
+          if (isTemporary && attempt === 1) {
+            console.warn(`[AI Runner] Model ${m} busy (attempt ${attempt}), retrying in 1200ms...`);
+            await new Promise((r) => setTimeout(r, 1200));
+            continue;
+          }
+          if (isTemporary || /404|not found|not supported/i.test(msg)) {
+            console.warn(`[AI Runner] Model ${m} unavailable (${msg}), attempting next candidate model...`);
+            break;
+          }
+          throw err;
         }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        lastError = err instanceof Error ? err : new Error(msg);
-        const isTemporary = /503|high demand|unavailable|capacity|429|exhausted|quota|404|not found/i.test(msg);
-        if (isTemporary) {
-          console.warn(`[AI Runner] Model ${m} unavailable (${msg}), attempting next stable model in pool...`);
-          continue;
-        }
-        throw err;
       }
     }
     throw lastError || new Error("Empty response received from Gemini API.");
