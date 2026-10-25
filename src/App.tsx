@@ -10,6 +10,7 @@ import { applyClassification, classifyQuestion, type QuestionClassification } fr
 import { demoAnswerKeys } from "./demoAnswerKeys";
 import { findCat2024Slot3Solution } from "./cat2024Slot3Solutions";
 import { MathContent, MathPreview, QuestionGraphViewer } from "./MathContent";
+import { ALL_ANSWER_OPTIONS, getQuestionOptionKeys, evaluateStudentAnswer, validateQuestionForImport } from "./questionValidation";
 import { AiPdfImport } from "./AiPdfImport";
 import { ApiKeyManager } from "./ApiKeyManager";
 import { CbtMockExam } from "./CbtMockExam";
@@ -45,7 +46,7 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "progress", label: "My progress", icon: Activity },
   { id: "reports", label: "My reports", icon: Flag },
 ];
-const answerOptions: Answer[] = ["A", "B", "C", "D"];
+const answerOptions: Answer[] = ALL_ANSWER_OPTIONS;
 
 function readLocal<T>(key: string, fallback: T): T {
   const value = localStorage.getItem(key);
@@ -60,26 +61,8 @@ function percent(a: number, b: number) {
 function titleCase(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function normalizedAnswer(value: string) {
-  return value.trim().replace(/,/g, "").replace(/\s+/g, " ").toLowerCase();
-}
-function numericAnswer(value: string): number | undefined {
-  const cleaned = value.trim().replace(/,/g, "").replace(/\s/g, "");
-  const fraction = cleaned.match(/^(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/);
-  if (fraction) {
-    const denominator = Number(fraction[2]);
-    return denominator ? Number(fraction[1]) / denominator : undefined;
-  }
-  if (!/^-?\d+(?:\.\d+)?$/.test(cleaned)) return undefined;
-  return Number(cleaned);
-}
-function isCorrectAnswer(question: Question, submitted: string) {
-  if (question.answerMode !== "text") return normalizedAnswer(submitted) === normalizedAnswer(question.correctAnswer ?? "");
-  const expectedNumber = numericAnswer(question.correctAnswer ?? "");
-  const submittedNumber = numericAnswer(submitted);
-  return expectedNumber !== undefined && submittedNumber !== undefined
-    ? Math.abs(expectedNumber - submittedNumber) < 1e-9
-    : normalizedAnswer(submitted) === normalizedAnswer(question.correctAnswer ?? "");
+function isCorrectAnswer(question: Question, submitted: string): boolean {
+  return evaluateStudentAnswer(question, submitted);
 }
 function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: string, sections: Section[], chapters: Chapter[]): Question {
   const questionText = typeof row.question === "string" ? row.question : "";
@@ -99,17 +82,35 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
   const chapter = section && (chapters.find((item) => item.sectionId === section.id && item.name.trim().toLowerCase() === (row.chapter ? String(row.chapter).trim().toLowerCase() : ""))
     ?? chapters.find((item) => item.sectionId === section.id));
 
-  const rowOptions = row.options && typeof row.options === "object" ? (row.options as Record<string, string>) : {};
+  let optA = typeof row.optionA === "string" ? row.optionA.trim() : "";
+  let optB = typeof row.optionB === "string" ? row.optionB.trim() : "";
+  let optC = typeof row.optionC === "string" ? row.optionC.trim() : "";
+  let optD = typeof row.optionD === "string" ? row.optionD.trim() : "";
+  let optE = typeof row.optionE === "string" ? row.optionE.trim() : "";
+
+  if (Array.isArray(row.options)) {
+    if (!optA && row.options[0]) optA = String(row.options[0]).trim();
+    if (!optB && row.options[1]) optB = String(row.options[1]).trim();
+    if (!optC && row.options[2]) optC = String(row.options[2]).trim();
+    if (!optD && row.options[3]) optD = String(row.options[3]).trim();
+    if (!optE && row.options[4]) optE = String(row.options[4]).trim();
+  } else if (row.options && typeof row.options === "object") {
+    const opts = row.options as Record<string, unknown>;
+    if (!optA && opts.A) optA = String(opts.A).trim();
+    if (!optB && opts.B) optB = String(opts.B).trim();
+    if (!optC && opts.C) optC = String(opts.C).trim();
+    if (!optD && opts.D) optD = String(opts.D).trim();
+    if (!optE && opts.E) optE = String(opts.E).trim();
+  }
+
   const options: Record<string, string> = {
-    A: typeof row.optionA === "string" && row.optionA.trim() ? row.optionA : (rowOptions.A ?? ""),
-    B: typeof row.optionB === "string" && row.optionB.trim() ? row.optionB : (rowOptions.B ?? ""),
-    C: typeof row.optionC === "string" && row.optionC.trim() ? row.optionC : (rowOptions.C ?? ""),
-    D: typeof row.optionD === "string" && row.optionD.trim() ? row.optionD : (rowOptions.D ?? ""),
+    A: optA,
+    B: optB,
+    C: optC,
+    D: optD,
   };
-  if (typeof row.optionE === "string" && row.optionE.trim()) {
-    options.E = row.optionE;
-  } else if (rowOptions.E) {
-    options.E = rowOptions.E;
+  if (optE) {
+    options.E = optE;
   }
 
   const rawAnswer = (typeof row.answer === "string" && row.answer.trim())
@@ -118,8 +119,11 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
     || "";
   const answer = pdfSolution?.answer ?? rawAnswer;
   const hasOptions = Boolean(options.A?.trim() || options.B?.trim());
-  const answerLetter = (["A", "B", "C", "D", "E"] as const).find((letter) => letter === answer.toUpperCase())
-    ?? (["A", "B", "C", "D", "E"] as const).find((letter) => options[letter]?.trim().toLowerCase() === answer.toLowerCase());
+
+  const numMap: Record<string, Answer> = { "1": "A", "2": "B", "3": "C", "4": "D", "5": "E" };
+  const answerTrimmed = answer.trim().toUpperCase();
+  const directMatch = numMap[answerTrimmed] || (ALL_ANSWER_OPTIONS.find((l) => l === answerTrimmed));
+  const answerLetter = directMatch ?? ALL_ANSWER_OPTIONS.find((letter) => options[letter]?.trim().toLowerCase() === answer.toLowerCase());
 
   const yearNum = typeof row.year === "number" ? row.year : (typeof row.sourceYear === "number" ? row.sourceYear : (Number(row.year) || undefined));
   const slotStr = typeof row.slot === "string" || typeof row.slot === "number" ? String(row.slot) : (typeof row.sourceSlot === "string" ? row.sourceSlot : undefined);
@@ -276,7 +280,7 @@ function checkMathAnswer(question: Pick<Question, "question" | "options" | "corr
     return { kind: "review", message: "No solution explanation is available for an automatic consistency check. Review the selected answer before saving." };
   }
 
-  const optionAnswer = explanation.match(/\b(?:correct\s+answer|final\s+answer|answer)\s*(?:is|=|:)?\s*(?:option\s*)?([A-D])\b|\boption\s+([A-D])\s+is\s+(?:the\s+)?correct\b/i);
+  const optionAnswer = explanation.match(/\b(?:correct\s+answer|final\s+answer|answer)\s*(?:is|=|:)?\s*(?:option\s*)?([A-E])\b|\boption\s+([A-E])\s+is\s+(?:the\s+)?correct\b/i);
   const declaredLetter = (optionAnswer?.[1] ?? optionAnswer?.[2])?.toUpperCase();
   if (declaredLetter && declaredLetter !== question.correctAnswer) {
     return { kind: "mismatch", message: `The explanation identifies option ${declaredLetter}, but option ${question.correctAnswer} is marked correct.` };
@@ -517,18 +521,40 @@ export default function App() {
 
     if (paperQuestions.length > 0) {
       setQuestions((current) => {
-        const existingMap = new Map(current.map((q) => [q.id, q]));
-        const textSet = new Set(current.map((q) => q.question.trim().toLowerCase()));
+        const existingMap = new Map<string, Question>();
+        const paperQMap = new Map<string, string>(); // "paperId_qNum" -> id
+        current.forEach((q) => {
+          existingMap.set(q.id, q);
+          if (q.paperId && q.question_number) {
+            paperQMap.set(`${q.paperId}_${q.question_number}`, q.id);
+          }
+        });
 
-        let added = 0;
+        let changed = false;
         for (const pq of paperQuestions) {
-          if (!existingMap.has(pq.id) && !textSet.has(pq.question.trim().toLowerCase())) {
+          const matchedId = (pq.paperId && pq.question_number) ? paperQMap.get(`${pq.paperId}_${pq.question_number}`) : undefined;
+          const targetId = matchedId || pq.id;
+          const existing = existingMap.get(targetId);
+
+          if (existing) {
+            if (
+              existing.question !== pq.question ||
+              JSON.stringify(existing.options) !== JSON.stringify(pq.options) ||
+              existing.correctAnswer !== pq.correctAnswer ||
+              existing.explanation !== pq.explanation
+            ) {
+              existingMap.set(targetId, { ...existing, ...pq, id: targetId });
+              changed = true;
+            }
+          } else {
             existingMap.set(pq.id, pq);
-            textSet.add(pq.question.trim().toLowerCase());
-            added++;
+            if (pq.paperId && pq.question_number) {
+              paperQMap.set(`${pq.paperId}_${pq.question_number}`, pq.id);
+            }
+            changed = true;
           }
         }
-        if (added > 0) {
+        if (changed) {
           const merged = Array.from(existingMap.values());
           localStorage.setItem("mba-questions", JSON.stringify(merged.filter((q) => !q.id.startsWith("firestore-"))));
           return merged;
@@ -791,6 +817,11 @@ export default function App() {
       question = await persistClassifiedQuestion(question, [...chapters]);
     }
 
+    const validation = validateQuestionForImport(question);
+    if (!validation.isValid) {
+      throw new Error(`Validation failed: ${validation.errors.join("; ")}`);
+    }
+
     const payload = { ...question, createChapter };
     let persisted = false;
 
@@ -817,9 +848,88 @@ export default function App() {
       }
     }
 
-    setQuestions((current) => current.some((entry) => entry.id === question.id) ? current : [...current, question]);
+    setQuestions((current) => {
+      const idx = current.findIndex(
+        (entry) => entry.id === question.id || (question.paperId && entry.paperId === question.paperId && entry.question_number === question.question_number)
+      );
+      let next: Question[];
+      if (idx >= 0) {
+        next = [...current];
+        next[idx] = { ...current[idx], ...question };
+      } else {
+        next = [...current, question];
+      }
+      localStorage.setItem("mba-questions", JSON.stringify(next.filter((q) => !q.id.startsWith("firestore-"))));
+      return next;
+    });
     setToast("Question added to the question bank");
     window.setTimeout(() => setToast(""), 2500);
+  }
+
+  async function addImportedQuestionsBatch(questionsToImport: Question[]) {
+    if (!isAdmin) throw new Error("Only the authorized admin account can import questions.");
+    if (!questionsToImport.length) return;
+
+    const validQuestions = questionsToImport.filter((q) => {
+      const check = validateQuestionForImport(q);
+      return check.isValid;
+    });
+    if (!validQuestions.length) return;
+
+    let persisted = false;
+    try {
+      const response = await fetch("/api/admin/questions/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validQuestions),
+      });
+      if (response.ok) {
+        persisted = true;
+      }
+    } catch {
+      // Backend failed, fallback to client-side Firestore
+    }
+
+    if (!persisted && isFirebaseConfigured && firestore) {
+      try {
+        const promises = validQuestions.map((q) => saveApprovedQuestionToFirestore(q));
+        await Promise.allSettled(promises);
+        persisted = true;
+      } catch (err) {
+        console.warn("Client-side Firestore batch question save failed:", err);
+      }
+    }
+
+    setQuestions((current) => {
+      const map = new Map<string, Question>();
+      const paperQMap = new Map<string, string>(); // "paperId_qNum" -> id
+      current.forEach((q) => {
+        map.set(q.id, q);
+        if (q.paperId && q.question_number) {
+          paperQMap.set(`${q.paperId}_${q.question_number}`, q.id);
+        }
+      });
+
+      for (const q of validQuestions) {
+        const matchedId = (q.paperId && q.question_number) ? paperQMap.get(`${q.paperId}_${q.question_number}`) : undefined;
+        const targetId = matchedId || q.id;
+        const existing = map.get(targetId);
+        if (existing) {
+          map.set(targetId, { ...existing, ...q, id: targetId });
+        } else {
+          map.set(q.id, q);
+          if (q.paperId && q.question_number) {
+            paperQMap.set(`${q.paperId}_${q.question_number}`, q.id);
+          }
+        }
+      }
+      const updated = Array.from(map.values());
+      localStorage.setItem("mba-questions", JSON.stringify(updated.filter((q) => !q.id.startsWith("firestore-"))));
+      return updated;
+    });
+
+    setToast(`Directly uploaded ${validQuestions.length} verified question(s) to the question bank`);
+    window.setTimeout(() => setToast(""), 3500);
   }
   async function saveApprovedQuestionToFirestore(question: Question) {
     if (!isFirebaseConfigured || !firestore) return;
@@ -834,6 +944,7 @@ export default function App() {
       optionB: options.B ?? "",
       optionC: options.C ?? "",
       optionD: options.D ?? "",
+      optionE: options.E ?? "",
       options: options,
       answer: question.correctAnswer ?? "",
       correctAnswer: question.correctAnswer ?? "",
@@ -1569,7 +1680,7 @@ export default function App() {
           <span className={`difficulty difficulty-${q.difficulty.toLowerCase()}`}>{q.difficulty}</span>
         </div>
         <p className="question-number">Question {quiz.index + 1}</p>
-        <h2><MathContent text={q.question} /></h2>
+        <div className="quiz-question-stem"><MathContent text={q.question} /></div>
         {q.imageUrl && <QuestionGraphViewer imageUrl={q.imageUrl} alt={q.imageAlt || `Question ${quiz.index + 1} Diagram`} />}
         {q.answerMode === "text" ? <div className="text-answer-entry">
           <label htmlFor="typed-answer">Your answer</label>
@@ -1584,7 +1695,7 @@ export default function App() {
             />
             {!answered && <button className="button button-primary" disabled={!typedAnswer.trim() || savingQuestionId === q.id} onClick={() => void chooseAnswer(typedAnswer)}>Submit answer <ArrowRight size={16} /></button>}
           </div>
-        </div> : <div className="answer-list">{answerOptions.map((key) => {
+        </div> : <div className="answer-list">{getQuestionOptionKeys(q).map((key) => {
           const isCorrect = key === q.correctAnswer;
           const isSelected = key === selected;
           const stateClass = answered && isCorrect ? "answer-correct" : answered && isSelected ? "answer-wrong" : "";
@@ -1599,7 +1710,7 @@ export default function App() {
               onClick={() => void chooseAnswer(key)}
             >
               <span className="answer-letter">{answered && isCorrect ? <Check size={17} /> : key}</span>
-              <span><MathContent text={q.options[key]} /></span>
+              <span><MathContent text={q.options[key] ?? ""} /></span>
               {answered && isCorrect && <span className="answer-mark">Correct answer</span>}
               {answered && isSelected && !isCorrect && <span className="answer-mark">Your answer</span>}
             </motion.button>
@@ -1806,7 +1917,7 @@ export default function App() {
   function renderAdmin() {
     if (!isAdmin) return null;
     const students = userProfiles.filter((user) => user.role === "student");
-    if (adminArea === "ai-import") return <AiPdfImport exams={exams} sections={sections} chapters={chapters} questions={questions} importedBy={profile?.name ?? "Administrator"} onApprove={addImportedQuestion} />;
+    if (adminArea === "ai-import") return <AiPdfImport exams={exams} sections={sections} chapters={chapters} questions={questions} importedBy={profile?.name ?? "Administrator"} onApprove={addImportedQuestion} onApproveBatch={addImportedQuestionsBatch} />;
     if (adminArea === "api-keys") return <div className="page-stack admin-page"><ApiKeyManager /></div>;
     if (adminArea === "settings") return <SettingsPanel settings={settings} exams={exams} sections={sections} onSave={(value) => void saveSiteSettings(value)} />;
     if (adminArea === "reports") return <QuestionReportsPanel
@@ -2557,7 +2668,7 @@ function QuestionReportsPanel({ reports, questions, isAdmin, historyRevision, on
         <header className="report-detail-header"><div><span className="eyebrow">REPORT {selected.id}</span><h2>{selected.examName} · {selected.sectionName}</h2><p>{selected.chapterName} · Submitted {dateText(selected.submittedAt)}</p></div><span className={`report-status status-${selected.status.toLowerCase().replace(/ /g, "-")}`}>{selected.status}</span></header>
         <div className="report-detail-grid">
           <section className="report-detail-block"><h3>Original Question</h3><p className="report-original-question"><MathContent text={selected.questionText} /></p>
-            <h4>Current Options</h4><ol className="report-options">{(["A", "B", "C", "D"] as const).map((answer) => <li key={answer}><b>{answer}.</b> <MathContent text={currentOptions?.[answer] ?? "Unavailable"} /></li>)}</ol>
+            <h4>Current Options</h4><ol className="report-options">{getQuestionOptionKeys({ options: currentOptions ?? {} }).map((answer) => <li key={answer}><b>{answer}.</b> <MathContent text={currentOptions?.[answer] ?? "Unavailable"} /></li>)}</ol>
             {isAdmin && <><h4>Current Correct Answer</h4><p>{currentQuestion?.correctAnswer ?? "Not available"}</p><h4>Current Explanation</h4>{currentQuestion?.explanation ? <MathContent className="solution-content" text={currentQuestion.explanation} /> : <p>No explanation is currently recorded.</p>}
               {currentQuestion && <button className="button button-outline" onClick={() => onEditQuestion(selected, currentQuestion)}>Edit Question</button>}
             </>}
@@ -3517,7 +3628,13 @@ function EntityEditor({ type, item, exams, sections, chapters, onClose, onSave, 
   const validChapters = chapters.filter((chapter) => chapter.sectionId === sectionId);
   const [chapterId, setChapterId] = useState((item as Question | undefined)?.chapterId ?? validChapters[0]?.id ?? "");
   const question = item as Question | undefined;
-  const [options, setOptions] = useState<Record<Answer, string>>(question?.options ?? { A: "", B: "", C: "", D: "" });
+  const [options, setOptions] = useState<Record<string, string>>({
+    A: question?.options?.A ?? "",
+    B: question?.options?.B ?? "",
+    C: question?.options?.C ?? "",
+    D: question?.options?.D ?? "",
+    E: question?.options?.E ?? "",
+  });
   const [liveQuestion, setLiveQuestion] = useState(question?.question ?? "");
   const [liveExplanation, setLiveExplanation] = useState(question?.explanation ?? "");
   const [answer, setAnswer] = useState(question?.answerMode === "text" ? "A" : question?.correctAnswer ?? (question?.hasAnswerKey === false ? "" : "A"));
@@ -3538,13 +3655,22 @@ function EntityEditor({ type, item, exams, sections, chapters, onClose, onSave, 
     else if (type === "chapter") onSave({ id, examId, sectionId, name } as Chapter);
     else if (!item) {
       const questionText = String(fields.get("question"));
+      const cleanedOptions: Record<string, string> = {
+        A: options.A,
+        B: options.B,
+        C: options.C,
+        D: options.D,
+      };
+      if (options.E && options.E.trim()) {
+        cleanedOptions.E = options.E.trim();
+      }
       const questionDraft: Question = {
         id,
         examId: "",
         sectionId: "",
         chapterId: "",
         question: questionText,
-        options,
+        options: cleanedOptions as Question["options"],
         correctAnswer: answer || undefined,
         hasAnswerKey: Boolean(answer),
         explanation: String(fields.get("explanation")),
@@ -3554,15 +3680,24 @@ function EntityEditor({ type, item, exams, sections, chapters, onClose, onSave, 
       setLiveExplanation(questionDraft.explanation ?? "");
       setAnswerCheck(checkMathAnswer(questionDraft));
       setReviewAcknowledged(false);
-      const classification = classify(`${questionText}\n${Object.values(options).join("\n")}\n${questionDraft.explanation}`);
+      const classification = classify(`${questionText}\n${Object.values(cleanedOptions).join("\n")}\n${questionDraft.explanation}`);
       setDraft(questionDraft);
       setSuggestion(classification);
     } else {
+      const cleanedOptions: Record<string, string> = {
+        A: options.A,
+        B: options.B,
+        C: options.C,
+        D: options.D,
+      };
+      if (options.E && options.E.trim()) {
+        cleanedOptions.E = options.E.trim();
+      }
       const updated: Question = {
         ...(question ?? {}),
         id, examId, sectionId, chapterId, topic: validChapters.find((chapter) => chapter.id === chapterId)?.name ?? "",
         subTopic: subTopic.trim(), question: String(fields.get("question")),
-        options, correctAnswer: answer || undefined, hasAnswerKey: Boolean(answer), explanation: String(fields.get("explanation")), difficulty,
+        options: cleanedOptions as Question["options"], correctAnswer: answer || undefined, hasAnswerKey: Boolean(answer), explanation: String(fields.get("explanation")), difficulty,
       };
       const check = checkMathAnswer(updated);
       setAnswerCheck(check);
@@ -3602,7 +3737,7 @@ function EntityEditor({ type, item, exams, sections, chapters, onClose, onSave, 
     return <Modal onClose={onClose}><div className="editor-modal classification-review">
       <div className="modal-title"><div><span className="eyebrow">AI CLASSIFICATION</span><h2>Review suggested classification</h2></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div>
       <MathPreview label="Question preview" text={draft.question} className="editor-math-preview" />
-      <div className="editor-option-previews">{answerOptions.map((key) => <div key={key}><b>{key}</b><MathContent text={draft.options[key]} /></div>)}</div>
+      <div className="editor-option-previews">{getQuestionOptionKeys(draft).map((key) => <div key={key}><b>{key}</b><MathContent text={draft.options[key] ?? ""} /></div>)}</div>
       {draft.explanation && <MathPreview label="Solution preview" text={draft.explanation} className="editor-math-preview" />}
       {answerCheck && <AnswerCheckNotice check={answerCheck} acknowledged={reviewAcknowledged} onAcknowledge={setReviewAcknowledged} />}
       <div className={`classification-confidence confidence-${suggestion.confidence.toLowerCase()}`}>{suggestion.confidence} confidence · {suggestion.reason}</div>
@@ -3630,7 +3765,7 @@ function EntityEditor({ type, item, exams, sections, chapters, onClose, onSave, 
         {item && <label className="form-label">Chapter / topic<select value={chapterId} onChange={(event) => setChapterId(event.target.value)} required>{validChapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.name}</option>)}</select></label>}
         <label className="form-label">Question<textarea name="question" value={liveQuestion} onChange={(event) => { setLiveQuestion(event.target.value); setAnswerCheck(null); setReviewAcknowledged(false); }} placeholder="Enter the question… Use $...$ or \\(...\\) for LaTeX." required rows={3} /></label>
         <MathPreview label="Live question preview" text={liveQuestion} className="editor-math-preview" />
-        <div className="option-editor">{answerOptions.map((key) => <label key={key} className="form-label"><span>Option {key}</span><input value={options[key]} onChange={(event) => { setOptions({ ...options, [key]: event.target.value }); setAnswerCheck(null); setReviewAcknowledged(false); }} required placeholder={`Enter option ${key}`} /><MathPreview label={`Option ${key} preview`} text={options[key]} className="editor-option-preview" /></label>)}</div>
+        <div className="option-editor">{answerOptions.map((key) => <label key={key} className="form-label"><span>Option {key} {key === "E" ? <span className="optional">(optional)</span> : null}</span><input value={options[key]} onChange={(event) => { setOptions({ ...options, [key]: event.target.value }); setAnswerCheck(null); setReviewAcknowledged(false); }} required={key !== "E"} placeholder={`Enter option ${key}${key === "E" ? " (leave blank if 4 options)" : ""}`} /><MathPreview label={`Option ${key} preview`} text={options[key]} className="editor-option-preview" /></label>)}</div>
         <div className="two-fields"><label className="form-label">Correct answer<select value={answer} onChange={(event) => { setAnswer(event.target.value as Answer | ""); setAnswerCheck(null); setReviewAcknowledged(false); }}>{!answer && <option value="">Not Available</option>}{answerOptions.map((key) => <option key={key}>{key}</option>)}</select></label><label className="form-label">Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value as Difficulty)}>{["Easy", "Medium", "Hard"].map((level) => <option key={level}>{level}</option>)}</select></label></div>
         {item && <Field label="Sub-topic" name="subTopic" value={subTopic} onChange={setSubTopic} placeholder="e.g. Linear Equations" />}
         <label className="form-label">Explanation <span className="optional">(optional)</span><textarea name="explanation" value={liveExplanation} onChange={(event) => { setLiveExplanation(event.target.value); setAnswerCheck(null); setReviewAcknowledged(false); }} rows={5} placeholder="Write each step on a new line. Use **bold** or $...$ for math." /></label>

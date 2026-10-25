@@ -4,6 +4,7 @@ import {
   RefreshCw, Sparkles, Trash2, Upload, X, Layers, Crop, Image as ImageIcon
 } from "lucide-react";
 import type { Answer, Chapter, Difficulty, Exam, ExtractedPaper, Question, Section } from "./model";
+import { getQuestionOptionKeys, normalizeOptionKey, validateQuestionForImport } from "./questionValidation";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { runAiWithFailover } from "./aiApiKeyStore";
@@ -54,14 +55,29 @@ function questionChunks(text: string): string[] {
   const lines = text.split(/\r?\n/).map((l) => l.trimEnd());
   const starts: number[] = [];
   const qRegex = /^\s*(?:(?:(?:Q(?:uestion|ue)?\.?|Prob(?:lem)?\.?)\s*)?\d{1,3}[.)\]:-]|\(\d{1,3}\)\s*|\bQuestion\s+\d{1,3}\b)/i;
+  const directionRegex = /^\s*(?:Directions?|Read the following|Passage|Consider the following|Common Data|Instructions?|Caselet|Study the following)/i;
 
   lines.forEach((line, index) => {
     if (qRegex.test(line)) starts.push(index);
   });
 
   let parts: string[] = [];
-  if (starts.length > 1) {
-    const boundaries = [0, ...starts.filter((n) => n > 0), lines.length];
+  if (starts.length > 0) {
+    // Preserve any preambles, introductory passages, or direction sets by keeping them attached
+    // to their respective question blocks.
+    const boundaries: number[] = [0];
+    for (let i = 1; i < starts.length; i++) {
+      let splitPoint = starts[i];
+      for (let j = starts[i - 1] + 1; j < starts[i]; j++) {
+        if (directionRegex.test(lines[j])) {
+          splitPoint = j;
+          break;
+        }
+      }
+      boundaries.push(splitPoint);
+    }
+    boundaries.push(lines.length);
+
     parts = boundaries.slice(0, -1).map((from, i) => lines.slice(from, boundaries[i + 1]).join("\n").trim()).filter(Boolean);
   }
   if (parts.length < 2) {
@@ -99,9 +115,20 @@ function questionToModel(
   id: string,
   paperInfo: { paperId?: string; paperTitle?: string; year?: number; slot?: string; fileName?: string }
 ): Question {
-  const options = item.options.slice(0, 4);
-  const optionMap = { A: options[0] ?? "", B: options[1] ?? "", C: options[2] ?? "", D: options[3] ?? "" };
-  const optionBased = item.type === "MCQ" && options.length >= 2 && /^[A-D]$/.test(item.correctAnswer.trim());
+  const rawOptions = Array.isArray(item.options) ? item.options : [];
+  const optionMap: Partial<Record<Answer, string>> & Record<string, string> = {
+    A: rawOptions[0] ?? "",
+    B: rawOptions[1] ?? "",
+    C: rawOptions[2] ?? "",
+    D: rawOptions[3] ?? "",
+  };
+  if (rawOptions[4] !== undefined && String(rawOptions[4]).trim() !== "") {
+    optionMap.E = String(rawOptions[4]).trim();
+  }
+  const normalizedKey = normalizeOptionKey(item.correctAnswer.trim());
+  const optionBased = item.type === "MCQ" && rawOptions.length >= 2 && Boolean(normalizedKey);
+  const finalAnswer = normalizedKey || item.correctAnswer.trim();
+
   return {
     id,
     examId: section.examId,
@@ -112,8 +139,8 @@ function questionToModel(
     question: item.question,
     options: optionMap,
     answerMode: optionBased ? "choice" : "text",
-    correctAnswer: item.correctAnswer.trim() || undefined,
-    hasAnswerKey: Boolean(item.correctAnswer.trim()),
+    correctAnswer: finalAnswer || undefined,
+    hasAnswerKey: Boolean(finalAnswer),
     explanation: item.explanation,
     difficulty: item.difficulty,
     questionType: item.type,
@@ -184,11 +211,12 @@ async function extractPdfTextClientSide(
 // ---------------------------------------------------------------------------
 const CLIENT_SYSTEM_INSTRUCTION =
   "Extract every complete question in the provided text. Return only questions present in the text. " +
+  "CRITICAL RULE FOR QUESTION STEM: Some questions have long passages, multiple introductory paragraphs, conditions, rules, tables, or scenarios (such as student-switching conditions, stream distributions, or data tables) before the question sentence. You MUST preserve and include the ENTIRE question stem—including all introductory paragraphs, conditions, background info, tables, and the actual question sentence—in the 'question' field. NEVER omit the passage or conditions. NEVER extract only the final sentence. Preserve readable paragraph breaks with double newlines (\\n\\n). " +
+  "CRITICAL RULE FOR OPTIONS: Support questions with any number of options (4 options, 5 options, etc.). If the original question has five options (Option 1 to Option 5, or A to E, including 'None of the remaining options is correct'), you MUST extract all 5 options in the 'options' array. Never drop or omit the 5th option. For questions with options A, B, C, D, E, set 'correctAnswer' to the corresponding option letter (A, B, C, D, or E). " +
   "Use the provided exam, subject/section and chapter catalog; choose exact existing IDs/names where suitable. " +
   "If a chapter does not match, put a concise suggested chapter name. Never invent a subject or section. " +
   "Use examId from the catalog. Preserve source answer key if present; otherwise solve carefully. " +
   "Generate concise, instructional explanations. For uncertainty use Low/Medium confidence and explain why. " +
-  "Keep each question self-contained and include options exactly. " +
   "OCR may confuse characters (for example 1O/10, O/0, x/?); normalize only when the intended meaning is clear. " +
   "Do not guess missing or ambiguous wording; preserve it and set Low confidence with a short review reason.";
 
@@ -285,9 +313,57 @@ function guessPaperInfo(fileName: string, examsList: Exam[]) {
   return { examId, year, slot, paperTitle };
 }
 
-export function AiPdfImport({ exams, sections, chapters, questions, importedBy, onApprove }: {
-  exams: Exam[]; sections: Section[]; chapters: Chapter[]; questions: Question[]; importedBy: string;
+export function checkQuestionNeedsReview(
+  item: ReviewItem,
+  sections: Section[],
+  _chapters: Chapter[]
+): { needsReview: boolean; reason?: string } {
+  if (item.status === "failed") {
+    return { needsReview: true, reason: item.error || "Batch processing failed" };
+  }
+  if (item.duplicate) {
+    return { needsReview: true, reason: "Possible duplicate with existing question in bank" };
+  }
+  if (item.value.confidence === "Low") {
+    return { needsReview: true, reason: item.value.confidenceReason || "Low AI extraction confidence" };
+  }
+  const section = sections.find(
+    (s) => s.examId === item.value.examId && s.name.toLowerCase() === item.value.section.toLowerCase()
+  );
+  if (!section) {
+    return { needsReview: true, reason: `Unmatched section: "${item.value.section}"` };
+  }
+  const validation = validateQuestionForImport({
+    question: item.value.question,
+    options: item.value.options,
+    type: item.value.type,
+    correctAnswer: item.value.correctAnswer,
+  });
+  if (!validation.valid) {
+    return { needsReview: true, reason: validation.errors.join("; ") };
+  }
+  if (item.value.hasDiagram && !item.value.imageUrl) {
+    return { needsReview: true, reason: "Diagram / graph snippet needed" };
+  }
+  return { needsReview: false };
+}
+
+export function AiPdfImport({
+  exams,
+  sections,
+  chapters,
+  questions,
+  importedBy,
+  onApprove,
+  onApproveBatch,
+}: {
+  exams: Exam[];
+  sections: Section[];
+  chapters: Chapter[];
+  questions: Question[];
+  importedBy: string;
   onApprove: (question: Question, createChapter: boolean) => Promise<void>;
+  onApproveBatch?: (questions: Question[]) => Promise<void>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -547,7 +623,7 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
       const chapter = chapters.find((entry) => entry.sectionId === section.id && entry.name.toLowerCase() === analyzed.chapter.toLowerCase());
       const same = questions.some((q) => normalize(q.question) === normalize(analyzed.question)
         && q.sectionId === section.id && (!chapter || q.chapterId === chapter.id)
-        && (["A", "B", "C", "D"] as Answer[]).every((key) => normalize(q.options[key] ?? "") === normalize(analyzed.options["ABCD".indexOf(key)] ?? "")));
+        && getQuestionOptionKeys(q).every((key, idx) => normalize(q.options[key] ?? "") === normalize(analyzed.options[idx] ?? "")));
       return { id: crypto.randomUUID(), value: analyzed, status: "pending" as const, duplicate: same, edited: false, createChapter: false };
     });
   }
@@ -817,10 +893,37 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
 
   async function approveAll() {
     setError("");
+    const batchItems: { item: ReviewItem; model: Question }[] = [];
     for (const item of pending) {
-      if (item.duplicate || item.status === "failed" || item.value.confidence === "Low" || !existingFor(item)) continue;
-      if (!targetChapter(item) && !item.createChapter) continue;
-      await approve(item, false);
+      if (item.duplicate || item.status === "failed" || item.value.confidence === "Low") continue;
+      const section = existingFor(item);
+      if (!section) continue;
+      const chapter = targetChapter(item);
+      if (!chapter && !item.createChapter) continue;
+
+      const qModel = questionToModel(item.value, section, chapter, `import-${crypto.randomUUID()}`, {
+        paperId,
+        paperTitle: paperTitle.trim() || file?.name || "Exam Paper",
+        year: paperYear,
+        slot: paperSlot,
+        fileName: file?.name,
+      });
+      batchItems.push({ item, model: qModel });
+    }
+
+    if (onApproveBatch && batchItems.length > 0) {
+      try {
+        await onApproveBatch(batchItems.map((b) => b.model));
+        for (const b of batchItems) {
+          mark(b.item.id, "approved");
+        }
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Could not batch approve questions.");
+      }
+    } else {
+      for (const b of batchItems) {
+        await approve(b.item, false);
+      }
     }
   }
 

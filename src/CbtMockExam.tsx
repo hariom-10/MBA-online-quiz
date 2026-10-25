@@ -15,8 +15,9 @@ import {
   Send,
   Flag,
 } from "lucide-react";
-import type { Question, ExtractedPaper, CbtQuestionStatus, CbtExamResult, Section, Answer } from "./model";
+import type { Question, ExtractedPaper, CbtQuestionStatus, CbtExamResult, Section } from "./model";
 import { MathContent, QuestionGraphViewer } from "./MathContent";
+import { getQuestionOptionKeys, evaluateStudentAnswer } from "./questionValidation";
 
 interface CbtMockExamProps {
   paper: ExtractedPaper;
@@ -229,27 +230,8 @@ export function CbtMockExam({
 
       sectionScores[sec.id].attempted++;
 
-      // Check correctness
-      let isCorrect = false;
-      const correctAns = (q.correctAnswer ?? "").trim().toUpperCase();
-      const studentUpper = studentAns.toUpperCase();
-
-      if (q.answerMode === "text" || !q.options || !Object.keys(q.options).length) {
-        // TITA numerical/text answer
-        isCorrect = studentUpper === correctAns || studentAns.toLowerCase() === (q.correctAnswer ?? "").toLowerCase();
-      } else {
-        // MCQ answer: compare letter (A/B/C/D) or option content
-        if (["A", "B", "C", "D"].includes(studentUpper) && studentUpper === correctAns) {
-          isCorrect = true;
-        } else {
-          const matchingOption = (["A", "B", "C", "D"] as Answer[]).find(
-            (k) => (q.options[k] ?? "").trim().toLowerCase() === studentAns.toLowerCase()
-          );
-          if (matchingOption && matchingOption === correctAns) {
-            isCorrect = true;
-          }
-        }
-      }
+      // Check correctness (supports Option 1-5, letter A-E, text, and numerical)
+      const isCorrect = evaluateStudentAnswer(q, studentAns);
 
       if (isCorrect) {
         correct++;
@@ -448,7 +430,7 @@ export function CbtMockExam({
                 </div>
               ) : (
                 <div className="cbt-options-list">
-                  {(["A", "B", "C", "D"] as Answer[]).map((optionKey) => {
+                  {getQuestionOptionKeys(currentQuestion).map((optionKey) => {
                     const text = currentQuestion.options?.[optionKey];
                     if (!text) return null;
                     const isSelected = selectedAnswer.toUpperCase() === optionKey;
@@ -918,11 +900,11 @@ function CbtScorecard({
                 {/* Option Review */}
                 {q.options && Object.keys(q.options).length > 0 && (
                   <div className="cbt-review-options">
-                    {(["A", "B", "C", "D"] as Answer[]).map((letter) => {
+                    {getQuestionOptionKeys(q).map((letter) => {
                       const optText = q.options[letter];
                       if (!optText) return null;
-                      const isStudentSelected = studentAns.toUpperCase() === letter;
-                      const isActualCorrect = correctAns === letter;
+                      const isStudentSelected = studentAns.toUpperCase() === letter || studentAns.toLowerCase() === optText.trim().toLowerCase();
+                      const isActualCorrect = correctAns === letter || (q.correctAnswer ?? "").trim().toLowerCase() === optText.trim().toLowerCase();
 
                       let optClass = "";
                       if (isActualCorrect) optClass = "opt-correct";

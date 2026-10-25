@@ -157,13 +157,23 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .difficulty{font-size:9px;font-weight:700;padding:5px 8px;border-radius:20px;white-space:nowrap}
 .difficulty-easy{background:#eaf8f1;color:#36a47a}.difficulty-medium{background:#fff4e5;color:#d4923c}.difficulty-hard{background:#fff0ef;color:#d46b65}
 .question-number{font-size:10px;color:#9a9eae;margin:27px 0 7px}
-.question-card h2{font:700 19px/1.55 Manrope,sans-serif;letter-spacing:-.35px;margin:0 0 22px;max-width:650px}
+.question-card h2{font:700 19px/1.55 Manrope,sans-serif;letter-spacing:-.35px;margin:0 0 22px;max-width:800px}
+.quiz-question-stem{font:500 18px/1.7 Manrope,sans-serif;letter-spacing:-.2px;margin:0 0 22px;max-width:850px;color:#1e293b}
+.mode-dark .quiz-question-stem{color:#f1f5f9}
 .math-content{color:inherit;overflow-wrap:anywhere}
-.math-content p{margin:0 0 9px;line-height:1.7}
-.math-content p:last-child{margin-bottom:0}
-.math-content .math-spacer{height:8px}
-.math-content .solution-step-heading{margin-top:13px;font-weight:750;color:#303246}
-.math-content .solution-final-answer{margin-top:13px;font-weight:800;color:#2d8560}
+.math-content p, .math-content .math-paragraph{margin:0 0 12px;line-height:1.72}
+.math-content p:last-child, .math-content .math-paragraph:last-child{margin-bottom:0}
+.math-content .math-spacer{height:10px}
+.math-content .solution-step-heading{margin-top:14px;font-weight:750;color:#303246}
+.math-content .solution-final-answer{margin-top:14px;font-weight:800;color:#2d8560}
+.math-content .question-direction-box{background:rgba(59,130,246,0.06);border-left:3px solid #3b82f6;padding:10px 14px;border-radius:6px;margin:10px 0 14px;font-weight:550}
+.mode-dark .math-content .question-direction-box{background:rgba(59,130,246,0.14);border-left-color:#60a5fa;color:#e2e8f0}
+.math-table-container{margin:14px 0;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px}
+.math-table{width:100%;border-collapse:collapse;font-size:14px;text-align:left}
+.math-table th, .math-table td{padding:9px 12px;border:1px solid #e2e8f0}
+.math-table th{background:#f8fafc;font-weight:650;color:#1e293b}
+.mode-dark .math-table th{background:#1e293b;color:#f8fafc}
+.mode-dark .math-table-container, .mode-dark .math-table th, .mode-dark .math-table td{border-color:#334155}
 .math-inline{display:inline}
 .math-display{display:block;overflow-x:auto;padding:5px 0;text-align:left}
 .math-content .katex{font-size:1.04em}
@@ -1053,14 +1063,13 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .mode-dark .math-content .solution-final-answer{color:#9fe0c1}
 .mode-dark .editor-option-previews>div>b{background:#302c52;color:#d0caff}
 .mode-dark .answer-validation-error{border-color:#704144;background:#392526;color:#ffd1cc}
-.mode-dark .answer-validation-review{border-color:#66542c;background:#332d20;color:#efd29d}
-.question-card h2 .math-content{display:inline}
-.question-card h2 .math-content p{display:inline;margin:0}
+.question-card h2 .math-content{display:block}
+.question-card h2 .math-content p, .question-card h2 .math-content .math-paragraph{display:block;margin:0 0 10px}
 .answer-option .math-content{display:inline}
-.answer-option .math-content p{display:inline;margin:0}
-.question-cell .math-content p,.wrong-row h3 .math-content p,.review-row h3 .math-content p{display:inline;margin:0}
-.report-options .math-content p{display:inline;margin:0}
-.classification-question .math-content p{display:inline;margin:0}
+.answer-option .math-content p, .answer-option .math-content .math-paragraph{display:inline;margin:0}
+.question-cell .math-content p,.wrong-row h3 .math-content p,.review-row h3 .math-content p{display:block;margin:0 0 6px}
+.report-options .math-content p, .report-options .math-content .math-paragraph{display:inline;margin:0}
+.classification-question .math-content p, .classification-question .math-content .math-paragraph{display:block;margin:0 0 6px}
 .mode-dark .solution-content{color:#c1c7d6}
 .mode-dark .feedback .solution-content .solution-step-heading{color:#edf0fa}
 .mode-dark .feedback .solution-content .solution-final-answer{color:#9fe0c1}

@@ -129,9 +129,33 @@ export async function handleApi(req, res) {
       questions.forEach((q) => {
         const cleanId = String(q.id || "").replace(/^firestore-/, "") || `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
         const docRef = db.collection("examQuestions").doc(cleanId);
-        const options = q.options && typeof q.options === "object" ? q.options : {
-          A: q.optionA || "", B: q.optionB || "", C: q.optionC || "", D: q.optionD || ""
-        };
+        const rawOptions = q.options;
+        const optionsMap = Array.isArray(rawOptions)
+          ? {
+              A: rawOptions[0] || "",
+              B: rawOptions[1] || "",
+              C: rawOptions[2] || "",
+              D: rawOptions[3] || "",
+              ...(rawOptions[4] ? { E: rawOptions[4] } : {}),
+            }
+          : (rawOptions && typeof rawOptions === "object" ? { ...rawOptions } : {
+              A: q.optionA || "",
+              B: q.optionB || "",
+              C: q.optionC || "",
+              D: q.optionD || "",
+              ...(q.optionE ? { E: q.optionE } : {}),
+            });
+
+        const optA = optionsMap.A ?? q.optionA ?? "";
+        const optB = optionsMap.B ?? q.optionB ?? "";
+        const optC = optionsMap.C ?? q.optionC ?? "";
+        const optD = optionsMap.D ?? q.optionD ?? "";
+        const optE = optionsMap.E ?? q.optionE ?? "";
+
+        const finalOptions = { A: optA, B: optB, C: optC, D: optD };
+        if (optE && String(optE).trim()) {
+          finalOptions.E = String(optE).trim();
+        }
 
         const docData = {
           id: cleanId,
@@ -146,11 +170,12 @@ export async function handleApi(req, res) {
           topic: q.topic || q.category || "",
           question_number: q.question_number || q.questionNumber || null,
           question: q.question || "",
-          optionA: options.A ?? q.optionA ?? "",
-          optionB: options.B ?? q.optionB ?? "",
-          optionC: options.C ?? q.optionC ?? "",
-          optionD: options.D ?? q.optionD ?? "",
-          options: { A: options.A ?? q.optionA ?? "", B: options.B ?? q.optionB ?? "", C: options.C ?? q.optionC ?? "", D: options.D ?? q.optionD ?? "" },
+          optionA: optA,
+          optionB: optB,
+          optionC: optC,
+          optionD: optD,
+          ...(optE && String(optE).trim() ? { optionE: String(optE).trim() } : {}),
+          options: finalOptions,
           answer: String(q.correctAnswer || q.answer || "").trim(),
           correctAnswer: String(q.correctAnswer || q.answer || "").trim(),
           explanation: q.explanation || "",

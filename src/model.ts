@@ -1,5 +1,5 @@
 export type Difficulty = "Easy" | "Medium" | "Hard";
-export type Answer = "A" | "B" | "C" | "D";
+export type Answer = "A" | "B" | "C" | "D" | "E";
 
 export type Exam = { id: string; name: string; tagline: string; color: string };
 export type Section = { id: string; examId: string; name: string };
@@ -12,7 +12,7 @@ export type Question = {
   topic?: string;
   subTopic?: string;
   question: string;
-  options: Record<Answer, string>;
+  options: Partial<Record<Answer, string>> & Record<string, string>;
   correctAnswer?: string;
   answerMode?: "choice" | "text";
   hasAnswerKey?: boolean;

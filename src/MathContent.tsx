@@ -81,26 +81,127 @@ function formattedLine(line: string): ReactNode[] {
   return pieces;
 }
 
+function isTableLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.includes("|");
+}
+
+function isSeparatorLine(line: string): boolean {
+  return /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/.test(line.trim());
+}
+
+function renderTable(tableLines: string[], keyPrefix: string): ReactNode {
+  const cleanRows = tableLines.filter((l) => !isSeparatorLine(l));
+  if (cleanRows.length === 0) return null;
+
+  const headerCells = cleanRows[0].split("|").slice(1, -1).map((c) => c.trim());
+  const bodyRows = cleanRows.slice(1).map((row) => row.split("|").slice(1, -1).map((c) => c.trim()));
+
+  return (
+    <div key={keyPrefix} className="math-table-container">
+      <table className="math-table">
+        {headerCells.length > 0 && (
+          <thead>
+            <tr>
+              {headerCells.map((cell, idx) => (
+                <th key={`${keyPrefix}-th-${idx}`}>{formattedLine(cell)}</th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {bodyRows.map((cells, rowIdx) => (
+            <tr key={`${keyPrefix}-tr-${rowIdx}`}>
+              {cells.map((cell, cellIdx) => (
+                <td key={`${keyPrefix}-td-${rowIdx}-${cellIdx}`}>{formattedLine(cell)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function MathContent({ text, className = "" }: { text: string; className?: string }) {
-  const lines = text.replace(/\r\n?/g, "\n")
-    .replace(/([.!?])\s+(?=(?:[A-Z]|\*\*(?:Step|Final|Answer|Solution)\b))/g, "$1\n")
-    .split("\n");
-  return <div className={`math-content ${className}`.trim()}>
-    {lines.map((line, index) => {
-      const trimmed = line.trim();
-      if (!trimmed) return <div className="math-spacer" key={`space-${index}`} aria-hidden="true" />;
-      const imgMatch = trimmed.match(/^!\[(.*?)\]\((.*?)\)$/);
-      if (imgMatch) {
-        return <QuestionGraphViewer key={`img-${index}`} alt={imgMatch[1]} imageUrl={imgMatch[2]} />;
+  if (!text) return null;
+
+  // Split into raw lines while preserving empty lines for paragraph separation
+  const rawLines = text.replace(/\r\n?/g, "\n").split("\n");
+  const nodes: ReactNode[] = [];
+  let tableBuffer: string[] = [];
+  let paragraphBuffer: string[] = [];
+
+  const flushTable = () => {
+    if (tableBuffer.length > 0) {
+      nodes.push(renderTable(tableBuffer, `table-${nodes.length}`));
+      tableBuffer = [];
+    }
+  };
+
+  const flushParagraph = () => {
+    if (paragraphBuffer.length > 0) {
+      const pText = paragraphBuffer.join("\n").trim();
+      if (pText) {
+        const semanticText = pText.replace(/^\*\*|\*\*$/g, "");
+        const heading = /^(?:solution|step\s+\d+\s*:|final answer\s*:|answer\s*:|directions?\s*(?:for\s+questions?)?\s*[:\d])/i.test(semanticText);
+        const final = /^(?:final answer|answer)\s*:/i.test(semanticText);
+        const isDirection = /^directions?\s*(?:for\s+questions?)?\s*[:\d]/i.test(semanticText);
+
+        nodes.push(
+          <div
+            key={`p-${nodes.length}`}
+            className={`math-paragraph ${heading ? "solution-step-heading" : ""} ${final ? "solution-final-answer" : ""} ${isDirection ? "question-direction-box" : ""}`.trim()}
+          >
+            {paragraphBuffer.map((line, lIdx) => (
+              <Fragment key={`line-${lIdx}`}>
+                {lIdx > 0 && <br />}
+                {formattedLine(line)}
+              </Fragment>
+            ))}
+          </div>
+        );
       }
-      const semanticLine = trimmed.replace(/^\*\*|\*\*$/g, "");
-      const heading = /^(?:solution|step\s+\d+\s*:|final answer\s*:|answer\s*:)/i.test(semanticLine);
-      const final = /^(?:final answer|answer)\s*:/i.test(semanticLine);
-      return <p key={`line-${index}`} className={`${heading ? "solution-step-heading" : ""} ${final ? "solution-final-answer" : ""}`.trim()}>
-        {formattedLine(trimmed)}
-      </p>;
-    })}
-  </div>;
+      paragraphBuffer = [];
+    }
+  };
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    // Check for images
+    const imgMatch = trimmed.match(/^!\[(.*?)\]\((.*?)\)$/);
+    if (imgMatch) {
+      flushParagraph();
+      flushTable();
+      nodes.push(<QuestionGraphViewer key={`img-${nodes.length}`} alt={imgMatch[1]} imageUrl={imgMatch[2]} />);
+      continue;
+    }
+
+    // Check for table lines
+    if (isTableLine(line)) {
+      flushParagraph();
+      tableBuffer.push(line);
+      continue;
+    } else if (tableBuffer.length > 0) {
+      flushTable();
+    }
+
+    // Blank line indicates paragraph boundary
+    if (!trimmed) {
+      flushParagraph();
+      nodes.push(<div className="math-spacer" key={`space-${nodes.length}`} aria-hidden="true" />);
+      continue;
+    }
+
+    paragraphBuffer.push(line);
+  }
+
+  flushTable();
+  flushParagraph();
+
+  return <div className={`math-content ${className}`.trim()}>{nodes}</div>;
 }
 
 export function QuestionGraphViewer({
