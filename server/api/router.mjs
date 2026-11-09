@@ -1139,7 +1139,7 @@ export async function handleApi(req, res) {
       if (req.body && Array.isArray(req.body)) {
         questions = req.body;
       } else {
-        const raw = (await bodyBuffer(req, 5 * 1024 * 1024)).toString("utf8");
+        const raw = (await bodyBuffer(req, 25 * 1024 * 1024)).toString("utf8");
         questions = raw ? JSON.parse(raw) : (Array.isArray(req.body) ? req.body : []);
       }
       if (!Array.isArray(questions) || questions.length === 0 || questions.length > 500) {
@@ -1148,22 +1148,57 @@ export async function handleApi(req, res) {
 
       const batch = db.batch();
       questions.forEach((q) => {
+        if (!q || typeof q !== "object" || Array.isArray(q)) {
+          throw new Error("Invalid question payload.");
+        }
+        const rawOptions = q.options;
+        const options = Array.isArray(rawOptions)
+          ? {
+              A: rawOptions[0] ?? q.optionA ?? "",
+              B: rawOptions[1] ?? q.optionB ?? "",
+              C: rawOptions[2] ?? q.optionC ?? "",
+              D: rawOptions[3] ?? q.optionD ?? "",
+              E: rawOptions[4] ?? q.optionE ?? "",
+            }
+          : rawOptions && typeof rawOptions === "object"
+            ? rawOptions
+            : {
+                A: q.optionA ?? "",
+                B: q.optionB ?? "",
+                C: q.optionC ?? "",
+                D: q.optionD ?? "",
+                E: q.optionE ?? "",
+              };
         const normalized = {
           ...q,
+          id: typeof q.id === "string" && q.id.replace(/^firestore-/, "").trim()
+            ? q.id
+            : `q_${randomUUID()}`,
           examId: q.examId || String(q.exam || "CAT").toLowerCase(),
           correctAnswer: q.correctAnswer || q.answer || "",
-          options: q.options && typeof q.options === "object" ? q.options : {
-            A: q.optionA || "", B: q.optionB || "", C: q.optionC || "", D: q.optionD || "",
-          },
+          options,
+          category: q.category || q.topic || q.section || "",
+          subject: q.subject || q.category || q.topic || "",
+          topic: q.topic || q.category || "",
+          questionType: q.questionType || q.type || "MCQ",
+          source: q.source || q.sourceUrl || "",
         };
         const record = questionDocument(normalized);
-        batch.set(db.collection("examQuestions").doc(record.id), record);
+        const tags = Array.isArray(q.tags)
+          ? q.tags.filter((tag) => typeof tag === "string").map((tag) => tag.trim().slice(0, 100)).filter(Boolean).slice(0, 50)
+          : [];
+        batch.set(db.collection("examQuestions").doc(record.id), {
+          ...record,
+          tags,
+          importedAt: new Date().toISOString(),
+          status: "published",
+        }, { merge: true });
       });
       await batch.commit();
       return json(res, 200, { success: true, count: questions.length }), true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not import questions.";
-      if (/Question |Answer option |Correct answer|valid JSON|question ID|question IDs/.test(message)) return json(res, 400, { error: message }), true;
+      if (/Invalid question payload|Question |Answer option |Correct answer|valid JSON|question ID|question IDs/.test(message)) return json(res, 400, { error: message }), true;
       console.error("[api/admin/questions/import] Firestore operation failed:", error);
       return json(res, 500, { error: "Could not import questions." }), true;
     }

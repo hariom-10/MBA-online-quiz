@@ -73,15 +73,21 @@ function getCategory(subject) {
   return subject || 'Quantitative Aptitude';
 }
 
-function extractAnswer(q, optA, optB, optC, optD) {
-  const raw = (q.correct_answer || '').trim();
+function extractAnswer(q, optA, optB, optC, optD, optE) {
+  const raw = (q.correct_answer || q.answer || '').trim();
   if (!q.options || q.options.length === 0) return raw;
-  const match = raw.match(/Choice\s+([A-D])/i) || raw.match(/^\(?([A-D])\)?/i);
+  const match = raw.match(/Choice\s+([A-E])/i) || raw.match(/^\(?([A-E])\)?/i);
   if (match) return match[1].toUpperCase();
+  const numMatch = raw.match(/^(?:Option\s*)?([1-5])$/i);
+  if (numMatch) {
+    const map = { "1": "A", "2": "B", "3": "C", "4": "D", "5": "E" };
+    return map[numMatch[1]];
+  }
   if (optA && optA.toLowerCase() === raw.toLowerCase()) return 'A';
   if (optB && optB.toLowerCase() === raw.toLowerCase()) return 'B';
   if (optC && optC.toLowerCase() === raw.toLowerCase()) return 'C';
   if (optD && optD.toLowerCase() === raw.toLowerCase()) return 'D';
+  if (optE && optE.toLowerCase() === raw.toLowerCase()) return 'E';
   return raw;
 }
 
@@ -102,7 +108,8 @@ async function importQuestions() {
       const optB = cleanOption(q.options?.[1]);
       const optC = cleanOption(q.options?.[2]);
       const optD = cleanOption(q.options?.[3]);
-      const answer = extractAnswer(q, optA, optB, optC, optD);
+      const optE = cleanOption(q.options?.[4]);
+      const answer = extractAnswer(q, optA, optB, optC, optD, optE);
       const category = getCategory(q.subject);
 
       // Store in examQuestions format expected by App.tsx and README
@@ -118,6 +125,7 @@ async function importQuestions() {
         optionB: optB,
         optionC: optC,
         optionD: optD,
+        ...(optE ? { optionE: optE } : {}),
         answer,
         explanation: q.explanation || '',
         source: q.source || '',
