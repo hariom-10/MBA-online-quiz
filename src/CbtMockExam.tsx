@@ -26,6 +26,7 @@ interface CbtMockExamProps {
   onExit: () => void;
   onSaveAttempt?: (result: CbtExamResult) => void;
   onReportQuestion?: (question: Question) => void;
+  practiceMode?: boolean;
 }
 
 export function CbtMockExam({
@@ -36,6 +37,7 @@ export function CbtMockExam({
   onExit,
   onSaveAttempt,
   onReportQuestion,
+  practiceMode = false,
 }: CbtMockExamProps) {
   // Total time allocated: default 40 mins for sectional or 120 mins for full mock
   const totalAllocatedMinutes = questions.length > 30 ? 120 : 40;
@@ -51,6 +53,8 @@ export function CbtMockExam({
 
   const currentQuestion = questions[currentIndex];
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const answersRef = useRef<Record<string, string>>({});
+  const secondsRemainingRef = useRef(totalAllocatedMinutes * 60);
 
   // Group questions by section
   const sectionList = useMemo(() => {
@@ -77,9 +81,11 @@ export function CbtMockExam({
       setSecondsRemaining((prev) => {
         if (prev <= 1) {
           clearInterval(timerRef.current!);
+          secondsRemainingRef.current = 0;
           handleSubmitExam();
           return 0;
         }
+        secondsRemainingRef.current = prev - 1;
         return prev - 1;
       });
 
@@ -154,16 +160,17 @@ export function CbtMockExam({
   // Handlers for action buttons
   const handleSelectOption = (optionKey: string) => {
     if (!currentQuestion) return;
-    setAnswers((prev) => ({ ...prev, [currentQuestion.id]: optionKey }));
+    const updatedAnswers = { ...answersRef.current, [currentQuestion.id]: optionKey };
+    answersRef.current = updatedAnswers;
+    setAnswers(updatedAnswers);
   };
 
   const handleClearResponse = () => {
     if (!currentQuestion) return;
-    setAnswers((prev) => {
-      const next = { ...prev };
-      delete next[currentQuestion.id];
-      return next;
-    });
+    const updatedAnswers = { ...answersRef.current };
+    delete updatedAnswers[currentQuestion.id];
+    answersRef.current = updatedAnswers;
+    setAnswers(updatedAnswers);
   };
 
   const handleToggleMarkForReview = () => {
@@ -190,6 +197,7 @@ export function CbtMockExam({
   const handleSubmitExam = () => {
     setShowSubmitModal(false);
     if (timerRef.current) clearInterval(timerRef.current);
+    const submittedAnswers = answersRef.current;
 
     let rawScore = 0;
     let correct = 0;
@@ -219,7 +227,7 @@ export function CbtMockExam({
       }
       sectionScores[sec.id].total++;
 
-      const studentAns = answers[q.id]?.trim();
+      const studentAns = submittedAnswers[q.id]?.trim();
       const isAttempted = Boolean(studentAns);
 
       if (!isAttempted) {
@@ -253,14 +261,14 @@ export function CbtMockExam({
 
       if (isCorrect) {
         correct++;
-        rawScore += 3;
+        rawScore += practiceMode ? 1 : 3;
         sectionScores[sec.id].correct++;
-        sectionScores[sec.id].score += 3;
+        sectionScores[sec.id].score += practiceMode ? 1 : 3;
       } else {
         incorrect++;
         // CAT/XAT standard: -1 for MCQ, 0 for TITA
         const isTita = q.answerMode === "text";
-        if (!isTita) {
+        if (!practiceMode && !isTita) {
           rawScore -= 1;
           sectionScores[sec.id].score -= 1;
         }
@@ -270,13 +278,13 @@ export function CbtMockExam({
 
     const totalQuestions = questions.length;
     const attempted = correct + incorrect;
-    const maxScore = totalQuestions * 3;
+    const maxScore = totalQuestions * (practiceMode ? 1 : 3);
     const accuracy = attempted > 0 ? Math.round((correct / attempted) * 100) : 0;
-    const timeUsed = totalAllocatedMinutes * 60 - secondsRemaining;
+    const timeUsed = totalAllocatedMinutes * 60 - secondsRemainingRef.current;
 
     // CAT percentile calibration estimate
     let estimatedPercentile = 50;
-    if (maxScore > 0) {
+    if (maxScore > 0 && !practiceMode) {
       const percentageScore = (rawScore / maxScore) * 100;
       if (percentageScore >= 45) estimatedPercentile = 99.5;
       else if (percentageScore >= 38) estimatedPercentile = 99.0;
@@ -303,7 +311,7 @@ export function CbtMockExam({
       accuracy,
       estimatedPercentile,
       totalTimeSeconds: timeUsed,
-      answers,
+      answers: submittedAnswers,
       timeSpent,
       sectionScores,
       submittedAt: new Date().toISOString(),
@@ -326,14 +334,17 @@ export function CbtMockExam({
         onExit={onExit}
         onRetake={() => {
           setResult(null);
+          answersRef.current = {};
           setAnswers({});
           setMarkedForReview({});
           setVisited({ [questions[0]?.id]: true });
           setTimeSpent({});
+          secondsRemainingRef.current = totalAllocatedMinutes * 60;
           setSecondsRemaining(totalAllocatedMinutes * 60);
           setCurrentIndex(0);
         }}
         onReportQuestion={onReportQuestion}
+        practiceMode={practiceMode}
       />
     );
   }
@@ -352,7 +363,7 @@ export function CbtMockExam({
       {/* Top Banner (TCS iON CAT Header) */}
       <header className="cbt-header">
         <div className="cbt-header-left">
-          <span className="cbt-logo-badge">{paper.examName || "CAT"} CBT EXAM</span>
+          <span className="cbt-logo-badge">{practiceMode ? "CHAPTER PRACTICE" : `${paper.examName || "CAT"} CBT EXAM`}</span>
           <div className="cbt-test-info">
             <h1>{paper.paperTitle || paper.fileName}</h1>
             <span className="cbt-subinfo">
@@ -416,8 +427,8 @@ export function CbtMockExam({
                   </span>
                 </div>
                 <div className="cbt-q-marks">
-                  Marks: <span className="cbt-pos-mark">+3.00</span> /{" "}
-                  <span className="cbt-neg-mark">{isCurrentTita ? "0.00" : "-1.00"}</span>
+                  Marks: <span className="cbt-pos-mark">+{practiceMode ? "1.00" : "3.00"}</span> /{" "}
+                  <span className="cbt-neg-mark">{practiceMode || isCurrentTita ? "0.00" : "-1.00"}</span>
                 </div>
               </div>
 
@@ -660,6 +671,7 @@ interface CbtScorecardProps {
   onExit: () => void;
   onRetake: () => void;
   onReportQuestion?: (question: Question) => void;
+  practiceMode?: boolean;
 }
 
 function CbtScorecard({
@@ -670,6 +682,7 @@ function CbtScorecard({
   onExit,
   onRetake,
   onReportQuestion,
+  practiceMode = false,
 }: CbtScorecardProps) {
   const [filterType, setFilterType] = useState<"all" | "correct" | "incorrect" | "unattempted">("all");
 
@@ -709,9 +722,9 @@ function CbtScorecard({
         <div className="cbt-hero-badge">
           <Award size={32} />
         </div>
-        <span className="eyebrow">OFFICIAL CBT SCORECARD</span>
+        <span className="eyebrow">{practiceMode ? "CHAPTER QUIZ SCORECARD" : "OFFICIAL CBT SCORECARD"}</span>
         <h1>{result.paperTitle}</h1>
-        <p>{paper.examName || "MBA"} Exam · {paper.slot || "Slot"} · Year {paper.year || 2024} · Completed on {new Date(result.submittedAt).toLocaleDateString()} at {new Date(result.submittedAt).toLocaleTimeString()}</p>
+        <p>{paper.examName || "MBA"} Exam · {paper.slot || "Slot"}{!practiceMode && ` · Year ${paper.year || 2024}`} · Completed on {new Date(result.submittedAt).toLocaleDateString()} at {new Date(result.submittedAt).toLocaleTimeString()}</p>
 
         <div className="cbt-hero-stats">
           <div className="cbt-stat-box score-stat">
@@ -719,14 +732,14 @@ function CbtScorecard({
             <strong className="cbt-stat-num">
               {result.rawScore} <small>/ {result.maxScore}</small>
             </strong>
-            <span className="cbt-stat-tag">Marks (+3 / -1)</span>
+            <span className="cbt-stat-tag">{practiceMode ? "1 point per correct answer" : "Marks (+3 / -1)"}</span>
           </div>
 
-          <div className="cbt-stat-box percentile-stat">
+          {!practiceMode && <div className="cbt-stat-box percentile-stat">
             <span className="cbt-stat-label">Projected Percentile</span>
             <strong className="cbt-stat-num">{result.estimatedPercentile}%ile</strong>
             <span className="cbt-stat-tag">CAT Normalized</span>
-          </div>
+          </div>}
 
           <div className="cbt-stat-box accuracy-stat">
             <span className="cbt-stat-label">Accuracy</span>
@@ -755,14 +768,14 @@ function CbtScorecard({
           <CheckCircle2 size={20} className="kpi-icon-green" />
           <div>
             <span>Correct Answers</span>
-            <strong>{result.correct} (+{result.correct * 3} marks)</strong>
+            <strong>{result.correct} (+{result.correct * (practiceMode ? 1 : 3)} marks)</strong>
           </div>
         </div>
         <div className="cbt-kpi-card">
           <XCircle size={20} className="kpi-icon-red" />
           <div>
             <span>Incorrect Answers</span>
-            <strong>{result.incorrect} (-{result.incorrect} marks)</strong>
+            <strong>{result.incorrect} ({practiceMode ? "0" : `-${result.incorrect}`} marks)</strong>
           </div>
         </div>
         <div className="cbt-kpi-card">
@@ -805,7 +818,7 @@ function CbtScorecard({
                       <td>{sec.total}</td>
                       <td>{sec.attempted}</td>
                       <td className="cbt-txt-green">+{sec.correct}</td>
-                      <td className="cbt-txt-red">-{sec.incorrect}</td>
+                      <td className="cbt-txt-red">{practiceMode ? "0" : `-${sec.incorrect}`}</td>
                       <td><b>{sec.score}</b></td>
                       <td>
                         <span className={`status-pill ${secAccuracy >= 75 ? "status-resolved" : secAccuracy >= 50 ? "status-under-review" : "status-rejected"}`}>
@@ -883,11 +896,11 @@ function CbtScorecard({
                   <div className="cbt-review-status-box">
                     {isCorrect ? (
                       <span className="cbt-status-tag cbt-tag-correct">
-                        <Check size={14} /> Correct (+3)
+                        <Check size={14} /> Correct (+{practiceMode ? 1 : 3})
                       </span>
                     ) : isAttempted ? (
                       <span className="cbt-status-tag cbt-tag-incorrect">
-                        <X size={14} /> Incorrect (-1)
+                        <X size={14} /> Incorrect ({practiceMode ? "+0" : "-1"})
                       </span>
                     ) : (
                       <span className="cbt-status-tag cbt-tag-skipped">
@@ -959,12 +972,12 @@ function CbtScorecard({
                 )}
 
                 {/* Solution Explanation */}
-                {q.explanation && (
+                {q.explanation ? (
                   <div className="cbt-review-solution">
                     <strong>Solution / Explanation:</strong>
                     <MathContent text={q.explanation} />
                   </div>
-                )}
+                ) : <p className="cbt-review-solution">No explanation is available for this question.</p>}
               </article>
             );
           })}

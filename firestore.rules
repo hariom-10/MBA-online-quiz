@@ -2,20 +2,43 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Shared exam questions
+    // Question-bank reads are public; all mutations use the Admin API.
     match /examQuestions/{questionId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if false;
     }
 
-    // Extracted papers records
+    // Imported papers can contain unreviewed content; access them only through the Admin API.
     match /extractedPapers/{paperId} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
 
-    // Students and other data - restrict access
+    // Student records may contain password hashes and are never exposed to client SDKs.
     match /students/{studentId} {
-      allow read: if true; // Or restrict to owner if possible
-      allow write: if false; 
+      allow read, write: if false;
+    }
+
+    // Category changes are written through the authenticated server API.
+    match /examCategories/{categoryId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Platform exam catalog writes are handled by the authenticated server API.
+    match /platformExams/{examId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Platform subject and chapter writes are handled by the authenticated server API.
+    match /platformSubjects/{subjectId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /platformChapters/{chapterId} {
+      allow read: if true;
+      allow write: if false;
     }
 
     match /{document=**} {

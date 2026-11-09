@@ -15,20 +15,20 @@ import { ApiKeyManager } from "./ApiKeyManager";
 import { CbtMockExam } from "./CbtMockExam";
 import { PageTransition } from "./components/ui";
 import { firestore, isFirebaseConfigured } from "./firebase";
-import { collection, deleteDoc, doc, getDocs, onSnapshot, query, setDoc, where } from "firebase/firestore";
+import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
 import {
-  clearLocalSession, createLocalStudent, deleteLocalStudent, loginLocalAccount, logoutAdminSession, readLocalAttemptEvents,
-  readLocalStudents, recordLocalAttempt, resetLocalStudentPassword, restoreLocalSession as restoreAccountSession,
-  setLocalStudentDisabled, syncFirebaseStudents, updateLocalStudent, verifyAdminSession,
+  clearLocalSession, createLocalStudent, deleteLocalStudent, listManagedAttempts, listManagedStudents, loginLocalAccount, logoutAdminSession,
+  resetLocalStudentPassword, setLocalStudentDisabled, updateLocalStudent, verifySession,
 } from "./localAuth";
-import type { Answer, Attempt, Chapter, Difficulty, Exam, ExtractedPaper, CbtExamResult, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, UserProfile } from "./model";
+import type { Answer, Attempt, Chapter, Difficulty, Exam, ExamCategory, ExtractedPaper, CbtExamResult, PlatformChapter, PlatformExam, PlatformSubject, Question, QuestionChange, QuestionReport, QuestionReportStatus, Section, SiteSettings, StudentAccountInput, StudentQuizAttempt, UserProfile } from "./model";
 
 type View = "dashboard" | "practice" | "random" | "wrong" | "progress" | "reports" | "admin";
 type QuizState = { questions: Question[]; index: number; answers: Record<string, string | null>; title: string; origin: View; sessionId: string };
 type EntityType = "exam" | "section" | "chapter" | "question";
 type Entity = Exam | Section | Chapter | Question;
 type LoginKind = "student" | "admin";
-type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "delete-questions" | "sections" | "chapters" | "statistics" | "settings" | "reports" | "ai-import" | "api-keys";
+type LoginPage = "choose" | "student-category" | LoginKind;
+type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "delete-questions" | "sections" | "chapters" | "categories" | "exams" | "subjects" | "statistics" | "settings" | "reports" | "ai-import" | "api-keys";
 const defaultSettings: SiteSettings = {
   id: "public",
   title: "MBA Prep",
@@ -143,6 +143,9 @@ function mapFirestoreQuestion(id: string, row: Record<string, unknown>, examId: 
     hasAnswerKey: Boolean(hasOptions ? answerLetter : answer),
     explanation: pdfSolution?.explanation ?? (typeof row.explanation === "string" ? row.explanation : ""),
     difficulty: (row.difficulty as Difficulty) || "Medium",
+    subject: typeof row.subject === "string" ? row.subject : typeof row.category === "string" ? row.category : undefined,
+    chapter: typeof row.chapter === "string" ? row.chapter : typeof row.chapterName === "string" ? row.chapterName : typeof row.topic === "string" ? row.topic : undefined,
+    subTopic: typeof row.subTopic === "string" ? row.subTopic : undefined,
     year: yearNum,
     slot: slotStr,
     sourceYear: yearNum,
@@ -265,6 +268,36 @@ async function fetchFirestoreExamQuestions(examId: string, sections: Section[], 
   return snapshot.docs.map((document) => mapFirestoreQuestion(document.id, document.data(), examId, sections, chapters))
     .filter((question) => Boolean(question.question.trim()));
 }
+function normalizeCatalogValue(value: string | undefined) {
+  return value?.trim().toLowerCase().replace(/[^a-z0-9]/g, "") ?? "";
+}
+function questionsForPlatformChapter(questions: Question[], exam: PlatformExam, subject: PlatformSubject, chapter: PlatformChapter) {
+  const examNames = new Set([exam.id, exam.name, exam.quizExamId].map(normalizeCatalogValue).filter(Boolean));
+  const subjectName = normalizeCatalogValue(subject.name);
+  const chapterName = normalizeCatalogValue(chapter.name);
+  return questions.filter((question) => {
+    const examMatches = [question.examId, question.exam].some((value) => examNames.has(normalizeCatalogValue(value)));
+    if (!examMatches) return false;
+    const subjectMatches = [question.subject, question.topic].some((value) => normalizeCatalogValue(value) === subjectName);
+    if (!subjectMatches) return false;
+    const chapterMatches = [question.chapter, question.subTopic, question.topic]
+      .some((value) => normalizeCatalogValue(value) === chapterName);
+    if (!chapterMatches && normalizeCatalogValue(question.chapterId) !== normalizeCatalogValue(chapter.id)) return false;
+    const options = question.options;
+    const correctAnswer = question.correctAnswer?.trim().toUpperCase();
+    return question.answerMode !== "text"
+      && ["A", "B", "C", "D"].every((key) => typeof options[key as Answer] === "string" && options[key as Answer].trim())
+      && Boolean(correctAnswer && ["A", "B", "C", "D"].includes(correctAnswer) && question.hasAnswerKey !== false);
+  }).map((question) => ({
+    ...question,
+    examId: exam.quizExamId || exam.id,
+    sectionId: subject.id,
+    chapterId: chapter.id,
+    subject: subject.name,
+    chapter: chapter.name,
+    topic: subject.name,
+  }));
+}
 type AnswerCheck = { kind: "mismatch" | "review"; message: string } | null;
 function checkMathAnswer(question: Pick<Question, "question" | "options" | "correctAnswer" | "explanation">): AnswerCheck {
   if (!question.correctAnswer) return null;
@@ -309,14 +342,18 @@ export default function App() {
   const [examQuestionsError, setExamQuestionsError] = useState("");
   const [questionLoadRevision, setQuestionLoadRevision] = useState(0);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [studentQuizAttempts, setStudentQuizAttempts] = useState<StudentQuizAttempt[]>([]);
+  const [reviewingAttemptId, setReviewingAttemptId] = useState<string | null>(null);
   const [adminAttempts, setAdminAttempts] = useState<(Attempt & { userId: string })[]>([]);
   const [questionReports, setQuestionReports] = useState<QuestionReport[]>([]);
   const [questionHistoryRevision, setQuestionHistoryRevision] = useState(0);
   const [userProfiles, setUserProfiles] = useState<UserProfile[]>([]);
   const [settings, setSettings] = useState<SiteSettings>(() => readLocal("mba-settings", defaultSettings));
-  const [profile, setProfile] = useState<UserProfile | null>(() => restoreAccountSession());
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
   const [darkMode, setDarkMode] = useState(() => readLocal("mba-dark-mode", false));
   const [selectedExam, setSelectedExam] = useState<string | null>(null);
+  const [selectedPlatformExam, setSelectedPlatformExam] = useState<PlatformExam | null>(null);
   const [view, setView] = useState<View>(() => profile?.role === "admin" ? "admin" : "dashboard");
   const [quiz, setQuiz] = useState<QuizState | null>(null);
   const [sectionId, setSectionId] = useState<string | null>(null);
@@ -325,7 +362,25 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const [authOpen, setAuthOpen] = useState(false);
-  const [loginKind, setLoginKind] = useState<LoginKind | "choose">("choose");
+  const [loginKind, setLoginKind] = useState<LoginPage>("choose");
+  const [selectedStudentCategory, setSelectedStudentCategory] = useState<ExamCategory | null>(null);
+  const [studentCategoryId, setStudentCategoryId] = useState(() => profile?.role === "student"
+    ? localStorage.getItem(`mba-student-category-${profile.uid}`) ?? ""
+    : "");
+  const [examCategories, setExamCategories] = useState<ExamCategory[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [categoriesError, setCategoriesError] = useState("");
+  const [categoriesReloadKey, setCategoriesReloadKey] = useState(0);
+  const [platformExams, setPlatformExams] = useState<PlatformExam[]>([]);
+  const [platformExamsLoading, setPlatformExamsLoading] = useState(false);
+  const [platformExamsError, setPlatformExamsError] = useState("");
+  const [platformExamsReloadKey, setPlatformExamsReloadKey] = useState(0);
+  const [subjectsExamId, setSubjectsExamId] = useState("");
+  const [platformSubjects, setPlatformSubjects] = useState<PlatformSubject[]>([]);
+  const [platformChapters, setPlatformChapters] = useState<PlatformChapter[]>([]);
+  const [platformSubjectsLoading, setPlatformSubjectsLoading] = useState(false);
+  const [platformSubjectsError, setPlatformSubjectsError] = useState("");
+  const [subjectsReloadKey, setSubjectsReloadKey] = useState(0);
   const [authBusy, setAuthBusy] = useState(false);
   const [savingQuestionId, setSavingQuestionId] = useState<string | null>(null);
   const [typedAnswer, setTypedAnswer] = useState("");
@@ -343,9 +398,165 @@ export default function App() {
     primary.forEach((p) => map.set(p.id, p));
     return Array.from(map.values());
   });
-  const [activeCbtPaper, setActiveCbtPaper] = useState<{ paper: ExtractedPaper; questions: Question[] } | null>(null);
-  const isAdmin = profile?.role === "admin";
+  const [activeCbtPaper, setActiveCbtPaper] = useState<{ paper: ExtractedPaper; questions: Question[]; practiceMode?: boolean } | null>(null);
+  const isAdmin = profile?.role === "admin" && profile.uid === "local-admin";
+  const activeStudentCategory = examCategories.find((category) => category.id === studentCategoryId && category.active);
   const pendingReportCount = questionReports.filter((report) => report.status === "Pending Review").length;
+
+  useEffect(() => {
+    const shouldLoadCategories = loginKind === "student-category"
+      || (profile?.role === "student")
+      || (isAdmin && view === "admin" && (adminArea === "categories" || adminArea === "exams" || adminArea === "subjects"));
+    if (!shouldLoadCategories) return;
+    let active = true;
+    let receivedLiveCategories = false;
+    let firstServerSnapshot = true;
+    let fetchedCategories: ExamCategory[] | null = null;
+    const studentView = loginKind === "student-category" || profile?.role === "student";
+    const endpoint = studentView ? "/api/categories" : "/api/admin/categories";
+    const unsubscribe = studentView && firestore
+      ? onSnapshot(collection(firestore, "examCategories"), { includeMetadataChanges: true }, (snapshot) => {
+        if (snapshot.metadata.fromCache) return;
+        receivedLiveCategories = snapshot.docs.length > 0;
+        if (firstServerSnapshot) {
+          firstServerSnapshot = false;
+          if (snapshot.empty && fetchedCategories?.length) return;
+        }
+        const categories = snapshot.docs
+          .map((document) => ({ ...document.data(), id: document.id } as ExamCategory))
+          .filter((category) => category.active === true)
+          .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0) || a.name.localeCompare(b.name));
+        if (active) {
+          setExamCategories(categories);
+          setCategoriesError("");
+          setCategoriesLoading(false);
+        }
+      }, (reason) => {
+        console.warn("Live exam category updates are unavailable:", reason);
+      })
+      : undefined;
+    setCategoriesLoading(true);
+    setCategoriesError("");
+    fetch(endpoint, { credentials: "same-origin" })
+      .then(async (response) => {
+        const result = await response.json() as { categories?: ExamCategory[]; error?: string };
+        if (!response.ok) throw new Error(result.error || "Could not load exam categories.");
+        if (!Array.isArray(result.categories)) throw new Error("The category service returned invalid data.");
+        fetchedCategories = result.categories;
+        if (active) setExamCategories(result.categories);
+      })
+      .catch((reason: unknown) => {
+        if (active && !receivedLiveCategories) setCategoriesError(reason instanceof Error ? reason.message : "Could not load exam categories.");
+      })
+      .finally(() => {
+        if (active) setCategoriesLoading(false);
+      });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [adminArea, categoriesReloadKey, isAdmin, loginKind, profile?.role, view]);
+
+  useEffect(() => {
+    const isStudentExamList = profile?.role === "student" && Boolean(studentCategoryId);
+    const isAdminExamManager = isAdmin && view === "admin" && (adminArea === "exams" || adminArea === "subjects");
+    if (!isStudentExamList && !isAdminExamManager) return;
+    let active = true;
+    let receivedLiveExams = false;
+    let firstServerSnapshot = true;
+    let fetchedExams: PlatformExam[] | null = null;
+    const endpoint = isAdminExamManager
+      ? "/api/admin/exams"
+      : `/api/exams?categoryId=${encodeURIComponent(studentCategoryId)}`;
+    const unsubscribe = isStudentExamList && firestore
+      ? onSnapshot(query(collection(firestore, "platformExams"), where("categoryId", "==", studentCategoryId)), { includeMetadataChanges: true }, (snapshot) => {
+        if (snapshot.metadata.fromCache) return;
+        receivedLiveExams = snapshot.docs.length > 0;
+        if (firstServerSnapshot) {
+          firstServerSnapshot = false;
+          if (snapshot.empty && fetchedExams?.length) return;
+        }
+        const loaded = snapshot.docs
+          .map((document) => ({ ...document.data(), id: document.id } as PlatformExam))
+          .filter((exam) => exam.active === true)
+          .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0) || a.name.localeCompare(b.name));
+        if (active) {
+          setPlatformExams(loaded);
+          setPlatformExamsError("");
+          setPlatformExamsLoading(false);
+        }
+      }, (reason) => {
+        console.warn("Live exam updates are unavailable:", reason);
+      })
+      : undefined;
+    setPlatformExamsLoading(true);
+    setPlatformExamsError("");
+    fetch(endpoint, { credentials: "same-origin" })
+      .then(async (response) => {
+        const result = await response.json() as { exams?: PlatformExam[]; error?: string };
+        if (!response.ok) throw new Error(result.error || "Could not load exams.");
+        if (!Array.isArray(result.exams)) throw new Error("The exam service returned invalid data.");
+        fetchedExams = result.exams;
+        if (active) setPlatformExams(result.exams);
+      })
+      .catch((reason: unknown) => {
+        if (active && !receivedLiveExams) setPlatformExamsError(reason instanceof Error ? reason.message : "Could not load exams.");
+      })
+      .finally(() => {
+        if (active) setPlatformExamsLoading(false);
+      });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [adminArea, isAdmin, platformExamsReloadKey, profile?.role, studentCategoryId, view]);
+
+  useEffect(() => {
+    if (!isAdmin || view !== "admin" || adminArea !== "subjects") return;
+    if (!platformExams.some((exam) => exam.id === subjectsExamId) && platformExams[0]) setSubjectsExamId(platformExams[0].id);
+  }, [adminArea, isAdmin, platformExams, subjectsExamId, view]);
+
+  useEffect(() => {
+    if (!isAdmin || view !== "admin" || adminArea !== "subjects" || !subjectsExamId) return;
+    let active = true;
+    setPlatformSubjectsLoading(true);
+    setPlatformSubjectsError("");
+    fetch(`/api/admin/subjects?examId=${encodeURIComponent(subjectsExamId)}`, { credentials: "same-origin" })
+      .then(async (response) => {
+        const result = await response.json() as { subjects?: PlatformSubject[]; chapters?: PlatformChapter[]; error?: string };
+        if (!response.ok) throw new Error(result.error || "Could not load subjects and chapters.");
+        if (!Array.isArray(result.subjects) || !Array.isArray(result.chapters)) throw new Error("The subject service returned invalid data.");
+        if (active) {
+          setPlatformSubjects(result.subjects);
+          setPlatformChapters(result.chapters);
+          setPlatformSubjectsError("");
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active) setPlatformSubjectsError(reason instanceof Error ? reason.message : "Could not load subjects and chapters.");
+      })
+      .finally(() => { if (active) setPlatformSubjectsLoading(false); });
+    return () => { active = false; };
+  }, [adminArea, isAdmin, subjectsExamId, subjectsReloadKey, view]);
+
+  useEffect(() => {
+    if (!selectedPlatformExam || isAdmin) return;
+    let active = true;
+    setPlatformSubjectsLoading(true);
+    setPlatformSubjectsError("");
+    fetch(`/api/exam-subjects?examId=${encodeURIComponent(selectedPlatformExam.id)}`, { credentials: "same-origin" })
+      .then(async (response) => {
+        const result = await response.json() as { subjects?: PlatformSubject[]; error?: string };
+        if (!response.ok) throw new Error(result.error || "Could not load subjects.");
+        if (!Array.isArray(result.subjects)) throw new Error("The subject service returned invalid data.");
+        if (active) setPlatformSubjects(result.subjects);
+      })
+      .catch((reason: unknown) => {
+        if (active) setPlatformSubjectsError(reason instanceof Error ? reason.message : "Could not load subjects.");
+      })
+      .finally(() => { if (active) setPlatformSubjectsLoading(false); });
+    return () => { active = false; };
+  }, [selectedPlatformExam, isAdmin, subjectsReloadKey]);
 
   const showError = useCallback((message: string) => {
     setError(message);
@@ -366,49 +577,99 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isFirebaseConfigured || !firestore) return;
-    getDocs(collection(firestore, "extractedPapers"))
-      .then((snapshot) => {
-        if (!snapshot.empty) {
-          const remote = snapshot.docs.map((d) => ({ ...d.data(), id: d.id } as ExtractedPaper));
-          setExtractedPapers((current) => {
-            const map = new Map<string, ExtractedPaper>();
-            current.forEach((p) => map.set(p.id, p));
-            remote.forEach((p) => map.set(p.id, p));
-            const merged = Array.from(map.values());
-            localStorage.setItem("mba-extracted-papers", JSON.stringify(merged));
-            localStorage.setItem("mba-extracted-papers-record", JSON.stringify(merged));
-            return merged;
-          });
-        } else {
-          setExtractedPapers([]);
-          localStorage.removeItem("mba-extracted-papers");
-          localStorage.removeItem("mba-extracted-papers-record");
-        }
+    if (!isAdmin) return;
+    let active = true;
+    void fetch("/api/admin/papers", { credentials: "same-origin" })
+      .then(async (response) => {
+        const data = await response.json() as { papers?: ExtractedPaper[]; error?: string };
+        if (!response.ok) throw new Error(data.error || "Could not load paper records.");
+        if (!Array.isArray(data.papers)) throw new Error("Paper service returned invalid data.");
+        if (!active) return;
+        const merged = [...data.papers];
+        setExtractedPapers(merged);
+        localStorage.setItem("mba-extracted-papers", JSON.stringify(merged));
+        localStorage.setItem("mba-extracted-papers-record", JSON.stringify(merged));
       })
-      .catch((err) => console.warn("Could not fetch remote extracted papers:", err));
+      .catch((reason: unknown) => {
+        if (active) {
+          setError(reason instanceof Error ? reason.message : "Could not load paper records.");
+          window.setTimeout(() => setError(""), 6000);
+        }
+      });
+    return () => { active = false; };
+  }, [isAdmin]);
+
+  useEffect(() => {
+    let active = true;
+    void verifySession().then((session) => {
+      if (!active) return;
+      if (session) {
+        setProfile(session);
+        if (session.role === "admin") {
+          setView("admin");
+          setAdminArea("dashboard");
+        } else {
+          setStudentCategoryId(localStorage.getItem(`mba-student-category-${session.uid}`) ?? "");
+        }
+      }
+    }).finally(() => { if (active) setSessionLoaded(true); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    if (!profile) {
+    if (profile?.role !== "student") {
       setAttempts([]);
+      setStudentQuizAttempts([]);
+      setReviewingAttemptId(null);
       return;
     }
-    setAttempts(readLocal(`mba-progress-${profile.uid}`, []));
-  }, [profile]);
-
-  useEffect(() => {
-    if (profile?.role !== "admin") return;
     let active = true;
-    void verifyAdminSession().then((session) => {
-      if (!active || session) return;
-      clearLocalSession();
-      setProfile(null);
-      setView("dashboard");
-      setAdminArea("dashboard");
-    });
+    void fetch("/api/student/attempts", { credentials: "same-origin" })
+      .then(async (response) => {
+        const data = await response.json() as { attempts?: StudentQuizAttempt[]; error?: string };
+        if (!response.ok) throw new Error(data.error || "Could not load your quiz history.");
+        if (!Array.isArray(data.attempts)) throw new Error("Performance service returned invalid data.");
+        if (!active) return;
+        setStudentQuizAttempts(data.attempts);
+        setAttempts(data.attempts.slice().reverse().flatMap((record) => record.questions
+          .filter((question) => question.isAttempted)
+          .map((question) => ({
+            questionId: question.id,
+            examId: record.examId,
+            selectedAnswer: question.selectedAnswer,
+            isCorrect: question.isCorrect,
+            attemptedAt: record.completedAt,
+            sessionId: record.id,
+          }))));
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : "Could not load your quiz history.");
+        window.setTimeout(() => setError(""), 6000);
+      });
     return () => { active = false; };
   }, [profile?.role, profile?.uid]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setAdminAttempts([]);
+      setUserProfiles([]);
+      return;
+    }
+    let active = true;
+    Promise.all([listManagedStudents(), listManagedAttempts()])
+      .then(([students, adminAttemptRows]) => {
+        if (!active) return;
+        setUserProfiles(students);
+        setAdminAttempts(adminAttemptRows as (Attempt & { userId: string })[]);
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : "Could not load student performance data.");
+        window.setTimeout(() => setError(""), 6000);
+      });
+    return () => { active = false; };
+  }, [isAdmin]);
 
   useEffect(() => {
     setTypedAnswer("");
@@ -552,18 +813,6 @@ export default function App() {
     return !question.sectionId || question.sectionId.startsWith(selectedExam);
   });
   const byId = useMemo(() => new Map(attempts.map((attempt) => [attempt.questionId, attempt])), [attempts]);
-  useEffect(() => {
-    if (!isAdmin) {
-      setAdminAttempts([]);
-      setUserProfiles([]);
-      return;
-    }
-    setAdminAttempts(readLocalAttemptEvents() as (Attempt & { userId: string })[]);
-    setUserProfiles(readLocalStudents());
-    syncFirebaseStudents().then((synced) => {
-      setUserProfiles(synced);
-    }).catch(() => {});
-  }, [isAdmin]);
 
   function openExam(id: string) {
     if (settings.hiddenExamIds.includes(id)) {
@@ -575,6 +824,23 @@ export default function App() {
     setSectionId(null);
     setQuiz(null);
     setResult(null);
+  }
+  function browsePlatformExam(id: string) {
+    const exam = platformExams.find((item) => item.id === id && item.active);
+    if (!exam) {
+      showError("This exam is currently unavailable.");
+      return;
+    }
+    setSelectedPlatformExam(exam);
+    setSelectedExam(null);
+    setPlatformSubjects([]);
+    setPlatformSubjectsError("");
+    setView("dashboard");
+  }
+  function returnToExamPicker() {
+    setSelectedPlatformExam(null);
+    setPlatformSubjects([]);
+    setPlatformSubjectsError("");
   }
   function visit(next: View) {
     if (next === "admin" && !isAdmin) {
@@ -609,14 +875,55 @@ export default function App() {
       correctAnswer: question.correctAnswer,
       explanation: question.explanation ?? "",
     };
-    recordLocalAttempt(profile.uid, attempt);
-    if (isAdmin) setAdminAttempts(readLocalAttemptEvents() as (Attempt & { userId: string })[]);
-    setAttempts((current) => {
-      const next = [...current.filter((item) => item.questionId !== question.id), attempt];
-      localStorage.setItem(`mba-progress-${profile.uid}`, JSON.stringify(next));
-      return next;
-    });
     return attempt;
+  }
+  async function saveCompletedQuiz(
+    title: string,
+    examId: string,
+    questionsForAttempt: Question[],
+    answers: Record<string, string | null | undefined>,
+    totalTimeSeconds: number,
+    scoringMode: "practice" | "cbt",
+  ) {
+    if (!profile || profile.role !== "student") return;
+    const response = await fetch("/api/student/attempts", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title,
+        examId,
+        totalTimeSeconds,
+        scoringMode,
+        questions: questionsForAttempt.map((question) => ({
+          id: question.id,
+          question: question.question,
+          options: question.options,
+          selectedAnswer: answers[question.id] ?? "",
+          correctAnswer: question.correctAnswer ?? "",
+          explanation: question.explanation ?? "",
+          answerMode: question.answerMode ?? "choice",
+          chapterId: question.chapterId,
+          chapterName: chapters.find((chapter) => chapter.id === question.chapterId)?.name ?? question.chapter ?? question.topic ?? "",
+          sectionName: sections.find((section) => section.id === question.sectionId)?.name ?? question.subject ?? "",
+        })),
+      }),
+    });
+    const data = await response.json() as { attempt?: StudentQuizAttempt; error?: string };
+    if (!response.ok) throw new Error(data.error || "Could not save your quiz result.");
+    if (!data.attempt) throw new Error("Performance service did not confirm the saved result.");
+    setStudentQuizAttempts((current) => [data.attempt!, ...current]);
+    setAttempts((current) => [
+      ...current,
+      ...data.attempt!.questions.filter((question) => question.isAttempted).map((question) => ({
+        questionId: question.id,
+        examId: data.attempt!.examId,
+        selectedAnswer: question.selectedAnswer,
+        isCorrect: question.isCorrect,
+        attemptedAt: data.attempt!.completedAt,
+        sessionId: data.attempt!.id,
+      })),
+    ]);
   }
   function beginQuiz(pool: Question[], title: string, origin: View) {
     if (!pool.length) {
@@ -669,6 +976,15 @@ export default function App() {
       const finished = { ...quiz, answers };
       setQuiz(null);
       setResult(finished);
+      void saveCompletedQuiz(
+        finished.title,
+        finished.questions[0]?.examId ?? selectedExam ?? "",
+        finished.questions,
+        finished.answers,
+        0,
+        "practice",
+      ).then(() => setToast("Quiz result saved to your performance history."))
+        .catch((reason: unknown) => showError(reason instanceof Error ? reason.message : "Could not save your quiz result."));
     }
   }
   function startChapter(section: Section, chapter: Chapter) {
@@ -682,29 +998,42 @@ export default function App() {
     }
     setActiveCbtPaper({ paper, questions: paperQuestions });
   }
+  function launchChapterQuiz(exam: PlatformExam, subject: PlatformSubject, chapter: PlatformChapter) {
+    const quizQuestions = questionsForPlatformChapter(questions, exam, subject, chapter);
+    if (!quizQuestions.length) {
+      showError(`No complete four-option questions with answer keys are available for ${chapter.name} yet.`);
+      return;
+    }
+    const startedAt = new Date().toISOString();
+    const paper: ExtractedPaper = {
+      id: `chapter-${chapter.id}-${Date.now()}`,
+      fileName: `${exam.name} · ${chapter.name}`,
+      paperTitle: `${exam.name} · ${subject.name} · ${chapter.name}`,
+      examId: exam.quizExamId || exam.id,
+      examName: exam.name,
+      year: new Date().getFullYear(),
+      slot: chapter.name,
+      extractedAt: startedAt,
+      extractedBy: profile?.name ?? "Student",
+      totalQuestions: quizQuestions.length,
+      approvedCount: quizQuestions.length,
+      rejectedCount: 0,
+      status: "Completed",
+    };
+    setActiveCbtPaper({ paper, questions: quizQuestions, practiceMode: true });
+  }
   function handleSaveCbtAttempt(res: CbtExamResult) {
-    if (!profile) return;
-    const sessionId = makeId("cbt-session");
-    const newAttempts: Attempt[] = Object.entries(res.answers).map(([qId, ans]) => {
-      const q = questions.find((item) => item.id === qId);
-      const isCorrect = q ? (q.correctAnswer ?? "").trim().toUpperCase() === ans.trim().toUpperCase() : false;
-      return {
-        questionId: qId,
-        examId: res.examId,
-        selectedAnswer: ans,
-        isCorrect,
-        attemptedAt: res.submittedAt,
-        sessionId,
-      };
-    });
-    setAttempts((cur) => {
-      const updated = [...cur, ...newAttempts];
-      localStorage.setItem(`mba-progress-${profile.uid}`, JSON.stringify(updated));
-      return updated;
-    });
-    newAttempts.forEach((att) => recordLocalAttempt(profile.uid, att));
-    setToast(`Mock test score recorded: ${res.rawScore} marks (${res.accuracy}% accuracy)`);
-    window.setTimeout(() => setToast(""), 3500);
+    if (!profile || profile.role !== "student" || !activeCbtPaper) return;
+    const attemptQuestions = activeCbtPaper.questions;
+    void saveCompletedQuiz(
+      res.paperTitle,
+      res.examId,
+      attemptQuestions,
+      res.answers,
+      res.totalTimeSeconds,
+      activeCbtPaper.practiceMode ? "practice" : "cbt",
+    ).then(() => setToast(`Quiz result saved: ${res.rawScore}/${res.maxScore} marks (${res.accuracy}% accuracy)`))
+      .catch((reason: unknown) => showError(reason instanceof Error ? reason.message : "Could not save your quiz result."));
   }
   async function saveEntity(type: EntityType, value: Entity, relatedReportId?: string) {
     if (!isAdmin) {
@@ -716,13 +1045,13 @@ export default function App() {
       if (type === "question") {
         const previous = relatedReportId ? questions.find((entry) => entry.id === value.id) : undefined;
         const question = await persistClassifiedQuestion(value as Question, [...chapters]);
-        await saveApprovedQuestionToFirestore(question);
-        setQuestions((current) => [...current.filter((entry) => entry.id !== question.id), question]);
+        const savedQuestion = await saveApprovedQuestionToFirestore(question);
+        setQuestions((current) => [...current.filter((entry) => entry.id !== savedQuestion.id && entry.id !== question.id), savedQuestion]);
         if (previous && relatedReportId) {
           const history = readLocal<QuestionChange[]>("mba-question-change-history", []);
           history.unshift({
             id: makeId("change"),
-            questionId: question.id,
+            questionId: savedQuestion.id,
             relatedReportId,
             previous: {
               question: previous.question,
@@ -791,69 +1120,42 @@ export default function App() {
       question = await persistClassifiedQuestion(question, [...chapters]);
     }
 
-    const payload = { ...question, createChapter };
-    let persisted = false;
+    const response = await fetch("/api/admin/questions/import", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([{ ...question, createChapter }]),
+    });
+    const result = await response.json() as { error?: string; success?: boolean };
+    if (!response.ok) throw new Error(result.error || "Could not import question.");
+    if (result.success !== true) throw new Error("The question service did not confirm the import.");
 
-    try {
-      const response = await fetch("/api/admin/questions/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify([payload]),
-      });
-
-      if (response.ok) {
-        persisted = true;
-      }
-    } catch {
-      // Backend request failed, will attempt client-side Firestore fallback
-    }
-
-    if (!persisted && isFirebaseConfigured && firestore) {
-      try {
-        await saveApprovedQuestionToFirestore(question);
-        persisted = true;
-      } catch (err) {
-        console.warn("Client-side Firestore question save failed:", err);
-      }
-    }
-
-    setQuestions((current) => current.some((entry) => entry.id === question.id) ? current : [...current, question]);
+    const persistedQuestion = { ...question, id: `firestore-${question.id.replace(/^firestore-/, "")}` };
+    setQuestions((current) => current.some((entry) => entry.id === persistedQuestion.id) ? current : [...current, persistedQuestion]);
     setToast("Question added to the question bank");
     window.setTimeout(() => setToast(""), 2500);
   }
-  async function saveApprovedQuestionToFirestore(question: Question) {
-    if (!isFirebaseConfigured || !firestore) return;
+  async function saveApprovedQuestionToFirestore(question: Question): Promise<Question> {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage questions.");
     const section = sections.find((entry) => entry.id === question.sectionId);
-    const options = question.options;
     const cleanId = question.id.startsWith("firestore-") ? question.id.replace("firestore-", "") : question.id;
-    await setDoc(doc(firestore, "examQuestions", cleanId), {
-      exam: question.examId.toUpperCase(),
-      examId: question.examId.toLowerCase(),
-      question: question.question,
-      optionA: options.A ?? "",
-      optionB: options.B ?? "",
-      optionC: options.C ?? "",
-      optionD: options.D ?? "",
-      options: options,
-      answer: question.correctAnswer ?? "",
-      correctAnswer: question.correctAnswer ?? "",
-      category: section?.name ?? question.topic ?? "",
-      subject: section?.name ?? question.topic ?? "",
-      explanation: question.explanation ?? "",
-      difficulty: question.difficulty ?? "Medium",
-      questionType: question.questionType ?? "MCQ",
-      year: question.year ?? question.sourceYear ?? new Date().getFullYear(),
-      slot: question.slot ?? question.sourceSlot ?? "",
-      paperId: question.paperId ?? "",
-      paperTitle: question.paperTitle ?? "",
-      source: question.source ?? "",
-      sourceYear: question.year ?? question.sourceYear ?? new Date().getFullYear(),
-      sourceSlot: question.slot ?? question.sourceSlot ?? "",
-      imageUrl: question.imageUrl ?? "",
-      imageAlt: question.imageAlt ?? "",
-      hasDiagram: Boolean(question.hasDiagram || question.imageUrl),
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
+    const chapter = chapters.find((entry) => entry.id === question.chapterId);
+    const response = await fetch("/api/admin/questions", {
+      method: question.id.startsWith("firestore-") || question.id.startsWith("import-") ? "PUT" : "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...question,
+        id: cleanId,
+        category: section?.name ?? question.topic ?? "",
+        subject: section?.name ?? question.subject ?? question.topic ?? "",
+        chapter: chapter?.name ?? question.chapter ?? "",
+      }),
+    });
+    const result = await response.json() as { error?: string; question?: Question };
+    if (!response.ok) throw new Error(result.error || "Could not save question.");
+    if (!result.question) throw new Error("The question service returned invalid data.");
+    return { ...question, id: `firestore-${cleanId}` };
   }
   async function submitQuestionReport(question: Question, reason: string, studentExplanation: string, evidence?: File) {
     if (!profile || profile.role !== "student") throw new Error("Sign in with a student account to report a question.");
@@ -912,6 +1214,35 @@ export default function App() {
     if (report.evidenceDataUrl) return report.evidenceDataUrl;
     throw new Error("This report has no locally stored evidence image.");
   }
+  async function deletePersistedQuestions(questionIds: string[]) {
+    const ids = [...new Set(questionIds
+      .filter((id) => id.startsWith("firestore-") || id.startsWith("import-"))
+      .map((id) => id.replace(/^firestore-/, "")))];
+    for (let index = 0; index < ids.length; index += 400) {
+      const response = await fetch("/api/admin/questions", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: ids.slice(index, index + 400) }),
+      });
+      const result = await response.json() as { error?: string; deleted?: string[] };
+      if (!response.ok) throw new Error(result.error || "Could not delete questions.");
+      if (!Array.isArray(result.deleted)) throw new Error("Question service did not confirm the deletion.");
+    }
+  }
+  async function deletePersistedPapers(all: boolean) {
+    const response = await fetch("/api/admin/papers", {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ all }),
+    });
+    const result = await response.json() as { error?: string; deleted?: string; success?: boolean };
+    if (!response.ok) throw new Error(result.error || "Could not delete paper records.");
+    if (all ? result.deleted !== "all" : result.success !== true) {
+      throw new Error("Paper service did not confirm the deletion.");
+    }
+  }
   function prepareAutoCategorization(recategorizeAll: boolean) {
     if (!isAdmin) {
       showError("Only an authorized administrator can categorize questions.");
@@ -938,7 +1269,7 @@ export default function App() {
     try {
       for (const question of classified) {
         const result = await persistClassifiedQuestion(question, nextChapters);
-        saved.push(result);
+        saved.push(await saveApprovedQuestionToFirestore(result));
         const chapter = nextChapters.find((entry) => entry.id === result.chapterId);
         if (chapter && !nextChapters.some((entry) => entry.id === chapter.id)) nextChapters.push(chapter);
       }
@@ -972,14 +1303,7 @@ export default function App() {
         setQuestions((all) => all.filter((entry) => entry.chapterId !== item.id));
         setChapters((all) => all.filter((entry) => entry.id !== item.id));
       } else {
-        const cleanId = item.id.startsWith("firestore-") ? item.id.replace("firestore-", "") : item.id;
-        if (isFirebaseConfigured && firestore && item.id.startsWith("firestore-")) {
-          try {
-            await deleteDoc(doc(firestore, "examQuestions", cleanId));
-          } catch (e) {
-            console.warn("Could not delete from Firestore:", e);
-          }
-        }
+        await deletePersistedQuestions([item.id]);
         setQuestions((all) => all.filter((entry) => entry.id !== item.id));
       }
     } catch (reason) {
@@ -992,13 +1316,11 @@ export default function App() {
       showError("Only the authorized administrator can delete questions.");
       return;
     }
-    const cleanId = questionId.startsWith("firestore-") ? questionId.replace("firestore-", "") : questionId;
-    if (isFirebaseConfigured && firestore && questionId.startsWith("firestore-")) {
-      try {
-        await deleteDoc(doc(firestore, "examQuestions", cleanId));
-      } catch (e) {
-        console.warn("Could not delete from Firestore:", e);
-      }
+    try {
+      await deletePersistedQuestions([questionId]);
+    } catch (reason) {
+      showError(reason instanceof Error ? reason.message : "Could not delete question.");
+      return;
     }
     // Also prune from extractedPapers if this question came from an imported paper
     setExtractedPapers((current) => {
@@ -1033,16 +1355,11 @@ export default function App() {
     }
     if (!questionIds.length) return;
     const idSet = new Set(questionIds);
-    if (isFirebaseConfigured && firestore) {
-      const db = firestore;
-      const deletePromises = questionIds
-        .filter((id) => id.startsWith("firestore-"))
-        .map((id) => deleteDoc(doc(db, "examQuestions", id.replace("firestore-", ""))));
-      try {
-        await Promise.allSettled(deletePromises);
-      } catch (e) {
-        console.warn("Batch delete Firestore notice:", e);
-      }
+    try {
+      await deletePersistedQuestions(questionIds);
+    } catch (reason) {
+      showError(reason instanceof Error ? reason.message : "Could not delete selected questions.");
+      return;
     }
     // Also prune from extractedPapers
     setExtractedPapers((current) => {
@@ -1076,16 +1393,16 @@ export default function App() {
       return;
     }
     try {
-      if (isFirebaseConfigured && firestore) {
-        const db = firestore;
-        const eqSnap = await getDocs(collection(db, "examQuestions"));
-        const eqDeletes = eqSnap.docs.map((d) => deleteDoc(doc(db, "examQuestions", d.id)));
-
-        const epSnap = await getDocs(collection(db, "extractedPapers"));
-        const epDeletes = epSnap.docs.map((d) => deleteDoc(doc(db, "extractedPapers", d.id)));
-
-        await Promise.allSettled([...eqDeletes, ...epDeletes]);
-      }
+      const questionResponse = await fetch("/api/admin/questions", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      const questionResult = await questionResponse.json() as { error?: string; deleted?: string };
+      if (!questionResponse.ok) throw new Error(questionResult.error || "Could not delete all questions.");
+      if (questionResult.deleted !== "all") throw new Error("Question service did not confirm the deletion.");
+      await deletePersistedPapers(true);
 
       localStorage.removeItem("mba-questions");
       localStorage.removeItem("mba-extracted-papers");
@@ -1138,6 +1455,11 @@ export default function App() {
     try {
       const kind = loginKind === "admin" ? "admin" : "student";
       const account = await loginLocalAccount(String(data.get("studentId")), String(data.get("password")), kind);
+      if (account.role === "student") {
+        if (!selectedStudentCategory?.active) throw new Error("Choose an active exam category before signing in.");
+        localStorage.setItem(`mba-student-category-${account.uid}`, selectedStudentCategory.id);
+        setStudentCategoryId(selectedStudentCategory.id);
+      }
       setProfile(account);
       setSelectedExam(null);
       setSectionId(null);
@@ -1151,21 +1473,156 @@ export default function App() {
       setAuthBusy(false);
     }
   }
-  function chooseLogin(kind: LoginKind) {
-    setLoginKind(kind);
+  function chooseLogin(page: LoginPage) {
+    setLoginKind(page);
+    if (page === "student-category") setSelectedStudentCategory(null);
     setError("");
+  }
+  function chooseStudentCategory(category: ExamCategory) {
+    setSelectedStudentCategory(category);
+    setStudentCategoryId(category.id);
+    setPlatformExams([]);
+    setSelectedExam(null);
+    setSectionId(null);
+    setView("dashboard");
+    if (profile?.role === "student") {
+      localStorage.setItem(`mba-student-category-${profile.uid}`, category.id);
+      setLoginKind("student");
+    } else {
+      setLoginKind("student");
+    }
+    setError("");
+  }
+  async function registerStudent(input: StudentAccountInput) {
+    if (!selectedStudentCategory) throw new Error("Choose an exam category before registering.");
+    setAuthBusy(true);
+    try {
+      const account = await createLocalStudent(input);
+      if (account.role !== "student") throw new Error("Student registration cannot create an administrator account.");
+      localStorage.setItem(`mba-student-category-${account.uid}`, selectedStudentCategory.id);
+      setStudentCategoryId(selectedStudentCategory.id);
+      setProfile(account);
+      setSessionLoaded(true);
+      setSelectedExam(null);
+      setSectionId(null);
+      setView("dashboard");
+      setAdminArea("dashboard");
+      setError("");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+  async function saveExamCategory(input: Pick<ExamCategory, "name" | "description" | "active">, id?: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage exam categories.");
+    const response = await fetch("/api/admin/categories", {
+      method: id ? "PUT" : "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(id ? { ...input, id } : input),
+    });
+    const result = await response.json() as { categories?: ExamCategory[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not save exam category.");
+    if (!Array.isArray(result.categories)) throw new Error("The category service returned invalid data.");
+    setExamCategories(result.categories);
+  }
+  async function savePlatformExam(input: Pick<PlatformExam, "categoryId" | "name" | "description" | "active" | "quizExamId">, id?: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage exams.");
+    const response = await fetch("/api/admin/exams", {
+      method: id ? "PUT" : "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(id ? { ...input, id } : input),
+    });
+    const result = await response.json() as { exams?: PlatformExam[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not save exam.");
+    if (!Array.isArray(result.exams)) throw new Error("The exam service returned invalid data.");
+    setPlatformExams(result.exams);
+  }
+  async function deletePlatformExam(id: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage exams.");
+    const response = await fetch(`/api/admin/exams?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const result = await response.json() as { exams?: PlatformExam[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not delete exam.");
+    if (!Array.isArray(result.exams)) throw new Error("The exam service returned invalid data.");
+    setPlatformExams(result.exams);
+    setSubjectsReloadKey((current) => current + 1);
+  }
+  async function savePlatformSubject(input: Pick<PlatformSubject, "examId" | "name">, id?: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage subjects.");
+    const response = await fetch("/api/admin/subjects", {
+      method: id ? "PUT" : "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(id ? { ...input, id } : input),
+    });
+    const result = await response.json() as { subject?: PlatformSubject; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not save subject.");
+    if (!result.subject) throw new Error("The subject service returned invalid data.");
+    setSubjectsReloadKey((current) => current + 1);
+  }
+  async function deletePlatformSubject(id: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage subjects.");
+    const response = await fetch(`/api/admin/subjects?id=${encodeURIComponent(id)}`, { method: "DELETE", credentials: "same-origin" });
+    const result = await response.json() as { subjects?: PlatformSubject[]; chapters?: PlatformChapter[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not delete subject.");
+    if (!Array.isArray(result.subjects) || !Array.isArray(result.chapters)) throw new Error("The subject service returned invalid data.");
+    setPlatformSubjects(result.subjects);
+    setPlatformChapters(result.chapters);
+  }
+  async function savePlatformChapter(input: Pick<PlatformChapter, "subjectId" | "name">, id?: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage chapters.");
+    const response = await fetch("/api/admin/chapters", {
+      method: id ? "PUT" : "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(id ? { ...input, id } : input),
+    });
+    const result = await response.json() as { chapter?: PlatformChapter; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not save chapter.");
+    if (!result.chapter) throw new Error("The chapter service returned invalid data.");
+    setSubjectsReloadKey((current) => current + 1);
+  }
+  async function deletePlatformChapter(id: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage chapters.");
+    const response = await fetch(`/api/admin/chapters?id=${encodeURIComponent(id)}`, { method: "DELETE", credentials: "same-origin" });
+    const result = await response.json() as { chapters?: PlatformChapter[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not delete chapter.");
+    if (!Array.isArray(result.chapters)) throw new Error("The chapter service returned invalid data.");
+    setPlatformChapters((current) => current.filter((chapter) => chapter.id !== id));
+  }
+  async function deleteExamCategory(id: string) {
+    if (!isAdmin) throw new Error("Only an authenticated administrator can manage exam categories.");
+    const response = await fetch(`/api/admin/categories?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const result = await response.json() as { categories?: ExamCategory[]; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not delete exam category.");
+    if (!Array.isArray(result.categories)) throw new Error("The category service returned invalid data.");
+    setExamCategories(result.categories);
   }
   async function createManagedStudent(input: StudentAccountInput) {
     if (!isAdmin) throw new Error("Only an authenticated administrator can create student accounts.");
-    await createLocalStudent(input);
-    setUserProfiles(readLocalStudents());
+    const response = await fetch("/api/admin/students", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const result = await response.json() as { student?: UserProfile; error?: string };
+    if (!response.ok) throw new Error(result.error || "Could not create student account.");
+    if (!result.student) throw new Error("Student service returned invalid data.");
+    setUserProfiles((current) => [...current, result.student!]);
     setToast(`Student account ${input.studentId} created.`);
     window.setTimeout(() => setToast(""), 4000);
   }
   async function updateManagedStudent(uid: string, input: StudentAccountInput) {
     if (!isAdmin) throw new Error("Administrator access is required.");
-    await updateLocalStudent(uid, input);
-    setUserProfiles(readLocalStudents());
+    const updated = await updateLocalStudent(uid, input);
+    setUserProfiles((current) => current.map((student) => student.uid === uid ? updated : student));
     setToast("Student account updated.");
     window.setTimeout(() => setToast(""), 3000);
   }
@@ -1177,17 +1634,16 @@ export default function App() {
   }
   async function setManagedStudentDisabled(uid: string, disabled: boolean) {
     if (!isAdmin) throw new Error("Administrator access is required.");
-    setLocalStudentDisabled(uid, disabled);
-    setUserProfiles(readLocalStudents());
+    const updated = await setLocalStudentDisabled(uid, disabled);
+    setUserProfiles((current) => current.map((student) => student.uid === uid ? updated : student));
     setToast(disabled ? "Student account disabled." : "Student account enabled.");
     window.setTimeout(() => setToast(""), 3000);
   }
   async function deleteManagedStudent(uid: string) {
     if (!isAdmin) throw new Error("Administrator access is required.");
-    deleteLocalStudent(uid);
-    setUserProfiles(readLocalStudents());
-    setAdminAttempts(readLocalAttemptEvents() as (Attempt & { userId: string })[]);
-    setQuestionReports(readLocal<QuestionReport[]>("mba-question-reports", []));
+    await deleteLocalStudent(uid);
+    setUserProfiles((current) => current.filter((student) => student.uid !== uid));
+    setAdminAttempts((current) => current.filter((attempt) => attempt.userId !== uid));
     setToast("Student account and saved progress deleted.");
     window.setTimeout(() => setToast(""), 4000);
   }
@@ -1209,7 +1665,13 @@ export default function App() {
       clearLocalSession();
       setProfile(null);
       setAttempts([]);
+      setStudentQuizAttempts([]);
+      setReviewingAttemptId(null);
+      setSessionLoaded(true);
       setLoginKind("choose");
+      setSelectedStudentCategory(null);
+      setStudentCategoryId("");
+      setPlatformExams([]);
       setView("dashboard");
       setSectionId(null);
       setQuiz(null);
@@ -1222,7 +1684,9 @@ export default function App() {
   }
   const currentAttemptStats = (examId: string) => {
     const availableIds = new Set(questions.filter((question) => question.examId === examId).map((question) => question.id));
-    const list = attempts.filter((item) => item.examId === examId && availableIds.has(item.questionId));
+    const list = [...new Map(attempts
+      .filter((item) => item.examId === examId && availableIds.has(item.questionId))
+      .map((item) => [item.questionId, item])).values()];
     const correct = list.filter((item) => item.isCorrect).length;
     const total = questions.filter((question) => question.examId === examId).length;
     return { total, attempted: list.length, correct, wrong: list.length - correct, accuracy: percent(correct, list.length), completion: percent(list.length, total) };
@@ -1623,7 +2087,7 @@ export default function App() {
         </div>
         {profile?.role === "student" && <button className="report-question-trigger" onClick={() => setReportingQuestion(q)}><Flag size={16} /> ⚠️ Report / Challenge Question</button>}
       </motion.article>
-      <p className="quiz-footnote"><ShieldCheck size={15} /> {savingQuestionId === q.id ? "Saving your answer…" : `Your answer is saved to your ${activeExam?.name ?? "exam"} progress as soon as you choose.`}</p>
+      <p className="quiz-footnote"><ShieldCheck size={15} /> {savingQuestionId === q.id ? "Checking your answer…" : "Your completed quiz result will be saved to your secure performance history."}</p>
     </div>;
   }
 
@@ -1705,6 +2169,23 @@ export default function App() {
     const statusQuestions = questions
       .filter((question) => !selectedExam || question.examId === selectedExam)
       .filter((question) => question.question.toLowerCase().includes(search.toLowerCase()));
+    const totalAttempted = studentQuizAttempts.reduce((total, attempt) => total + attempt.attempted, 0);
+    const totalCorrect = studentQuizAttempts.reduce((total, attempt) => total + attempt.correct, 0);
+    const totalIncorrect = studentQuizAttempts.reduce((total, attempt) => total + attempt.incorrect, 0);
+    const chapterStats = new Map<string, { label: string; attempted: number; correct: number }>();
+    studentQuizAttempts.forEach((attempt) => attempt.questions.forEach((question) => {
+      if (!question.isAttempted) return;
+      const chapterName = question.chapterName || question.sectionName || "General";
+      const chapterKey = `${attempt.examId}:${question.sectionName}:${chapterName}`;
+      const label = [exams.find((exam) => exam.id === attempt.examId)?.name ?? attempt.examId.toUpperCase(), question.sectionName, chapterName]
+        .filter(Boolean)
+        .join(" · ");
+      const current = chapterStats.get(chapterKey) ?? { label, attempted: 0, correct: 0 };
+      current.attempted += 1;
+      if (question.isCorrect) current.correct += 1;
+      chapterStats.set(chapterKey, current);
+    }));
+    const reviewingAttempt = studentQuizAttempts.find((attempt) => attempt.id === reviewingAttemptId);
     return (
       <PageTransition className="page-stack">
         <section className="section-heading page-title">
@@ -1716,10 +2197,72 @@ export default function App() {
         </section>
         {!profile && (
           <div className="notice">
-            <UserRound size={18} /> Sign in to save progress across devices.{" "}
+            <UserRound size={18} /> Sign in to view your secure performance history.{" "}
             <button className="text-button" onClick={() => setAuthOpen(true)}>Sign in</button>
           </div>
         )}
+        {profile?.role === "student" && <>
+          <section className="stat-grid">
+            <StatCard icon={<ClipboardList />} label="Completed quizzes" value={studentQuizAttempts.length} caption="saved to your account" tone="purple" />
+            <StatCard icon={<BookOpen />} label="Questions attempted" value={totalAttempted} caption={`${totalCorrect} correct`} tone="blue" />
+            <StatCard icon={<Check />} label="Correct answers" value={totalCorrect} caption={`${totalIncorrect} incorrect`} tone="green" />
+            <StatCard icon={<Target />} label="Overall accuracy" value={`${percent(totalCorrect, totalAttempted)}%`} caption="across completed quizzes" tone="orange" />
+          </section>
+          <section className="status-panel">
+            <div className="section-heading"><div><h2>Chapter-wise performance</h2><p>Results are calculated from completed quizzes on your account.</p></div></div>
+            <div className="mini-section-list">
+              {[...chapterStats.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([chapter, stats]) => (
+                <div key={chapter}>
+                  <div><span>{stats.label}</span><b>{percent(stats.correct, stats.attempted)}% · {stats.correct}/{stats.attempted}</b></div>
+                  <div className="progress-track"><span style={{ width: `${percent(stats.correct, stats.attempted)}%` }} /></div>
+                </div>
+              ))}
+              {!chapterStats.size && <p className="status-empty">Complete a quiz to see chapter performance.</p>}
+            </div>
+          </section>
+          <section className="status-panel">
+            <div className="section-heading"><div><h2>Previous quiz results</h2><p>Review your score and every answer from a completed attempt.</p></div><span className="soft-badge">{studentQuizAttempts.length} attempts</span></div>
+            <div className="student-attempt-list">
+              {studentQuizAttempts.map((attempt) => (
+                <article className="student-attempt-card" key={attempt.id}>
+                  <div>
+                    <span className="eyebrow">{exams.find((exam) => exam.id === attempt.examId)?.name ?? attempt.examId.toUpperCase()}</span>
+                    <h3>{attempt.title}</h3>
+                    <p>{dateText(attempt.completedAt)} · {attempt.totalQuestions} questions · {Math.floor(attempt.totalTimeSeconds / 60)}m {attempt.totalTimeSeconds % 60}s</p>
+                  </div>
+                  <div className="student-attempt-score">
+                    <b>{attempt.rawScore}/{attempt.maxScore}</b>
+                    <small>{attempt.accuracy}% accuracy · {attempt.correct} correct · {attempt.incorrect} incorrect</small>
+                  </div>
+                  <button className="button button-outline" type="button" onClick={() => setReviewingAttemptId((current) => current === attempt.id ? null : attempt.id)}>
+                    {reviewingAttempt?.id === attempt.id ? "Close review" : "Review answers"}
+                  </button>
+                </article>
+              ))}
+              {!studentQuizAttempts.length && <p className="status-empty">Your completed quiz results will appear here.</p>}
+            </div>
+          </section>
+          {reviewingAttempt && <section className="result-review">
+            <div className="section-heading"><div><h2>{reviewingAttempt.title} · Answer review</h2><p>{dateText(reviewingAttempt.completedAt)} · {reviewingAttempt.rawScore}/{reviewingAttempt.maxScore} points</p></div></div>
+            {reviewingAttempt.questions.map((question, index) => (
+              <article className="student-attempt-question" key={`${reviewingAttempt.id}-${question.id}`}>
+                <div className="student-attempt-question-heading">
+                  <b>Question {index + 1}</b>
+                  <span className={`status-pill ${!question.isAttempted ? "status-not-attempted" : question.isCorrect ? "status-correct" : "status-wrong"}`}>
+                    {!question.isAttempted ? "Unattempted" : question.isCorrect ? "Correct" : "Incorrect"}
+                  </span>
+                </div>
+                <p><MathContent text={question.question} /></p>
+                {question.sectionName && <small>{question.sectionName}{question.chapterName ? ` · ${question.chapterName}` : ""}</small>}
+                <div className="student-attempt-answer">
+                  <span>Your answer: <b>{question.selectedAnswer || "Not answered"}</b></span>
+                  <span>Correct answer: <b>{question.correctAnswer}</b></span>
+                </div>
+                {question.explanation && <p className="student-attempt-explanation"><b>Explanation:</b> <MathContent text={question.explanation} /></p>}
+              </article>
+            ))}
+          </section>}
+        </>}
         <div className="progress-exams">
           {exams.map((exam, index) => {
             const stats = currentAttemptStats(exam.id);
@@ -1809,6 +2352,38 @@ export default function App() {
     if (adminArea === "ai-import") return <AiPdfImport exams={exams} sections={sections} chapters={chapters} questions={questions} importedBy={profile?.name ?? "Administrator"} onApprove={addImportedQuestion} />;
     if (adminArea === "api-keys") return <div className="page-stack admin-page"><ApiKeyManager /></div>;
     if (adminArea === "settings") return <SettingsPanel settings={settings} exams={exams} sections={sections} onSave={(value) => void saveSiteSettings(value)} />;
+    if (adminArea === "categories") return <AdminCategoriesPanel
+      categories={examCategories}
+      loading={categoriesLoading}
+      error={categoriesError}
+      onRetry={() => setCategoriesReloadKey((current) => current + 1)}
+      onSave={saveExamCategory}
+      onDelete={deleteExamCategory}
+    />;
+    if (adminArea === "exams") return <AdminExamsPanel
+      categories={examCategories}
+      exams={platformExams}
+      quizExams={exams}
+      loading={platformExamsLoading}
+      error={platformExamsError}
+      onRetry={() => setPlatformExamsReloadKey((current) => current + 1)}
+      onSave={savePlatformExam}
+      onDelete={deletePlatformExam}
+    />;
+    if (adminArea === "subjects") return <AdminSubjectsPanel
+      exams={platformExams}
+      selectedExamId={subjectsExamId}
+      onSelectExam={setSubjectsExamId}
+      subjects={platformSubjects}
+      chapters={platformChapters}
+      loading={platformSubjectsLoading}
+      error={platformSubjectsError}
+      onRetry={() => setSubjectsReloadKey((current) => current + 1)}
+      onSaveSubject={savePlatformSubject}
+      onDeleteSubject={deletePlatformSubject}
+      onSaveChapter={savePlatformChapter}
+      onDeleteChapter={deletePlatformChapter}
+    />;
     if (adminArea === "reports") return <QuestionReportsPanel
       reports={questionReports} questions={questions}
       isAdmin historyRevision={questionHistoryRevision} onReview={changeQuestionReport} onEditQuestion={(report, question) => setEditing({ type: "question", item: question, reportId: report.id })}
@@ -1846,7 +2421,7 @@ export default function App() {
     return <div className="page-stack"><section className="section-heading page-title"><div><span className="eyebrow">CONTENT MANAGEMENT</span><h1>Add a question</h1><p>Create a question and add it to an exam, subject and chapter.</p></div></section><button className="button button-primary" onClick={() => setEditing({ type: "question" })}>+ Add question</button></div>;
   }
 
-  const appReady = true;
+  const appReady = sessionLoaded;
   const viewLabel = view === "dashboard" ? "Dashboard" : view === "practice" ? "Chapter practice" : view === "random" ? "Random quiz" : view === "wrong" ? "Wrong questions" : view === "progress" ? "My progress" : view === "reports" ? "My reports" : "Admin dashboard";
 
   if (appReady && !profile) return <div className={darkMode ? "mode-dark login-theme" : "login-theme"}>
@@ -1854,7 +2429,21 @@ export default function App() {
       darkMode={darkMode} onToggleTheme={() => setDarkMode((current) => !current)}
       kind={loginKind} busy={authBusy} error={error}
       onChoose={chooseLogin} onSubmit={(event) => void submitAuth(event)}
-      onBack={() => { setLoginKind("choose"); setError(""); }}
+      onRegister={registerStudent}
+      selectedStudentCategory={selectedStudentCategory}
+      categories={examCategories}
+      categoriesLoading={categoriesLoading}
+      categoriesError={categoriesError}
+      onRetryCategories={() => setCategoriesReloadKey((current) => current + 1)}
+      onSelectStudentCategory={chooseStudentCategory}
+      onBack={() => {
+        if (loginKind === "student") setLoginKind("student-category");
+        else {
+          setLoginKind("choose");
+          setSelectedStudentCategory(null);
+        }
+        setError("");
+      }}
       onDismissError={() => setError("")}
     />
     {toast && <div className="toast">{toast}<button onClick={() => setToast("")}><X size={16} /></button></div>}
@@ -1871,6 +2460,7 @@ export default function App() {
           onExit={() => setActiveCbtPaper(null)}
           onSaveAttempt={handleSaveCbtAttempt}
           onReportQuestion={(q) => setReportingQuestion(q)}
+          practiceMode={activeCbtPaper.practiceMode}
         />
         {(error || toast) && (
           <div className={`toast ${error ? "toast-error" : ""}`}>
@@ -1891,6 +2481,9 @@ export default function App() {
         <nav className="admin-nav">{([
           ["dashboard", "Dashboard", LayoutDashboard],
           ["students", "Students", Users],
+          ["categories", "Exam Categories", GraduationCap],
+          ["exams", "Exam Management", BookOpen],
+          ["subjects", "Subjects & Chapters", Layers3],
           ["create-student", "Create Student Account", UserRound],
           ["questions", "Questions", CircleHelp],
           ["delete-questions", "Delete Questions", Trash2],
@@ -1965,9 +2558,60 @@ export default function App() {
               {renderProgress()}
             </PageTransition>
           )}
-          {appReady && !isAdmin && !selectedExam && view !== "progress" && view !== "reports" && (
+          {appReady && !isAdmin && !activeStudentCategory && view !== "progress" && view !== "reports" && (
+            <PageTransition key="student-category-picker">
+              <StudentCategoryPanel
+                categories={examCategories}
+                loading={categoriesLoading}
+                error={categoriesError}
+                onRetry={() => setCategoriesReloadKey((current) => current + 1)}
+                onSelect={chooseStudentCategory}
+              />
+            </PageTransition>
+          )}
+          {appReady && !isAdmin && selectedPlatformExam && activeStudentCategory && !selectedExam && view !== "progress" && view !== "reports" && (
+            <PageTransition key={`subjects-${selectedPlatformExam.id}`}>
+              <StudentSubjectChapterPicker
+                exam={selectedPlatformExam}
+                subjects={platformSubjects}
+                questions={questions}
+                loading={platformSubjectsLoading}
+                error={platformSubjectsError}
+                questionLoading={examQuestionsLoading}
+                questionError={examQuestionsError}
+                onRetry={() => setSubjectsReloadKey((current) => current + 1)}
+                onBack={returnToExamPicker}
+                onStartChapter={(subject, chapter) => launchChapterQuiz(selectedPlatformExam, subject, chapter)}
+              />
+            </PageTransition>
+          )}
+          {appReady && !isAdmin && activeStudentCategory && !selectedExam && !selectedPlatformExam && view !== "progress" && view !== "reports" && (
             <PageTransition key="exam-picker">
-              <ExamPicker exams={exams.filter((exam) => !settings.hiddenExamIds.includes(exam.id))} onSelect={openExam} onProgress={() => visit("progress")} profile={profile} onAuth={() => setAuthOpen(true)} onAdmin={() => visit("admin")} title={settings.title} welcome={settings.welcomeMessage} logoUrl={settings.logoUrl} />
+              <ExamPicker
+                exams={platformExams.filter((exam) => exam.active)}
+                quizExams={exams.filter((exam) => !settings.hiddenExamIds.includes(exam.id))}
+                category={activeStudentCategory}
+                loading={platformExamsLoading}
+                error={platformExamsError}
+                onRetry={() => setPlatformExamsReloadKey((current) => current + 1)}
+                onSelect={openExam}
+                onBrowseSubjects={browsePlatformExam}
+                onChangeCategory={() => {
+                  if (profile?.role === "student") localStorage.removeItem(`mba-student-category-${profile.uid}`);
+                  setStudentCategoryId("");
+                  setSelectedStudentCategory(null);
+                  setPlatformExams([]);
+                  setSelectedExam(null);
+                  setSelectedPlatformExam(null);
+                }}
+                onProgress={() => visit("progress")}
+                profile={profile}
+                onAuth={() => setAuthOpen(true)}
+                onAdmin={() => visit("admin")}
+                title={settings.title}
+                welcome={settings.welcomeMessage}
+                logoUrl={settings.logoUrl}
+              />
             </PageTransition>
           )}
           {appReady && !isAdmin && selectedExam && (
@@ -2027,17 +2671,34 @@ function MiniStat({ label, value }: { label: string; value: string | number }) {
   return <div><small>{label}</small><b>{value}</b></div>;
 }
 
-function ExamPicker({ exams, onSelect, onProgress, profile, onAuth, onAdmin, title, welcome, logoUrl }: {
-  exams: Exam[]; onSelect: (id: string) => void; onProgress: () => void; profile: UserProfile | null;
+function StudentCategoryPanel({ categories, loading, error, onRetry, onSelect }: {
+  categories: ExamCategory[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onSelect: (category: ExamCategory) => void;
+}) {
+  return <div className="page-stack student-catalog-page">
+    <section className="section-heading page-title"><div><span className="eyebrow"><GraduationCap size={14} /> STUDENT PORTAL</span><h1>Choose an exam category</h1><p>Your exam list will be filtered to the category you select.</p></div></section>
+    {error && <div className="login-error" role="alert"><CircleHelp size={17} />{error}<button className="button button-outline" onClick={onRetry}>Try again</button></div>}
+    {loading ? <div className="category-loading" role="status">Loading active categories…</div>
+      : <div className="student-category-grid">
+        {categories.filter((category) => category.active).map((category) => <button key={category.id} type="button" className="student-category-card" onClick={() => onSelect(category)}>
+          <span className="account-choice-icon"><GraduationCap size={23} /></span>
+          <span className="student-category-name">{category.name}</span>
+          <span className="student-category-description">{category.description}</span>
+          <span className="account-choice-link">View exams <ArrowRight size={15} /></span>
+        </button>)}
+        {!error && categories.filter((category) => category.active).length === 0 && <div className="category-loading">No active exam categories are available right now.</div>}
+      </div>}
+  </div>;
+}
+
+function ExamPicker({ exams, quizExams, category, loading, error, onRetry, onSelect, onBrowseSubjects, onChangeCategory, onProgress, profile, onAuth, onAdmin, title, welcome, logoUrl }: {
+  exams: PlatformExam[]; quizExams: Exam[]; category: ExamCategory; loading: boolean; error: string;
+  onRetry: () => void; onSelect: (id: string) => void; onBrowseSubjects: (id: string) => void; onChangeCategory: () => void; onProgress: () => void; profile: UserProfile | null;
   onAuth: () => void; onAdmin: () => void; title: string; welcome: string; logoUrl: string;
 }) {
-  const examBadges: Record<string, { authority: string; colorClass: string }> = {
-    cat: { authority: "IIM Entrance", colorClass: "border-indigo-500/30 text-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/40" },
-    cmat: { authority: "NTA / AICTE", colorClass: "border-emerald-500/30 text-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/40" },
-    mat: { authority: "AIMA National", colorClass: "border-amber-500/30 text-amber-500 bg-amber-50/50 dark:bg-amber-950/40" },
-    xat: { authority: "XLRI Jamshedpur", colorClass: "border-cyan-500/30 text-cyan-500 bg-cyan-50/50 dark:bg-cyan-950/40" },
-  };
-
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -2056,6 +2717,7 @@ function ExamPicker({ exams, onSelect, onProgress, profile, onAuth, onAdmin, tit
           </div>
         </div>
         <div className="picker-header-actions flex items-center gap-3">
+          <button className="button button-quiet" onClick={onChangeCategory}>Change category</button>
           {profile && (
             <button className="button button-quiet" onClick={onProgress}>
               <Activity size={16} /> My progress
@@ -2084,10 +2746,10 @@ function ExamPicker({ exams, onSelect, onProgress, profile, onAuth, onAdmin, tit
           className="picker-copy"
         >
           <span className="eyebrow">
-            <span className="eyebrow-dot" /> COMPREHENSIVE MBA ENTRANCE PLATFORM
+            <span className="eyebrow-dot" /> {category.name.toUpperCase()} EXAM PREPARATION
           </span>
-          <h1>Which exam are<br />you preparing for?</h1>
-          <p>{welcome}</p>
+          <h1>Which {category.name} exam are<br />you preparing for?</h1>
+          <p>{category.description || welcome}</p>
           <div className="picker-perks">
             <span><Check size={15} /> Real Past Question Papers &amp; CBT Mocks</span>
             <span><Check size={15} /> LaTeX Math &amp; Graph Inspection</span>
@@ -2095,39 +2757,45 @@ function ExamPicker({ exams, onSelect, onProgress, profile, onAuth, onAdmin, tit
           </div>
         </motion.div>
 
-        <div className="exam-card-grid">
+        {error && <div className="login-error" role="alert"><CircleHelp size={17} />{error}<button className="button button-outline" onClick={onRetry}>Try again</button></div>}
+        {loading ? <div className="category-loading" role="status">Loading exams…</div> : <div className="exam-card-grid">
           {exams.map((exam, index) => {
-            const badge = examBadges[exam.id.toLowerCase()] || { authority: "MBA Test", colorClass: "text-indigo-500" };
+            const linkedExam = quizExams.find((item) => item.id === exam.quizExamId);
+            const color = linkedExam?.color ?? ["violet", "blue", "green", "orange"][index % 4];
             return (
-              <motion.button
+              <motion.article
                 key={exam.id}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.35, delay: index * 0.06, ease: [0.16, 1, 0.3, 1] }}
                 whileHover={{ y: -6, transition: { duration: 0.18 } }}
                 whileTap={{ scale: 0.98 }}
-                className={`exam-card exam-${exam.color} relative overflow-hidden text-left`}
-                onClick={() => onSelect(exam.id)}
+                className={`exam-card exam-${color} relative overflow-hidden text-left`}
               >
                 <div className="exam-card-top">
                   <span className="exam-card-icon">
                     {index === 0 ? <Target /> : index === 1 ? <Zap /> : index === 2 ? <BookOpen /> : <Award />}
                   </span>
-                  <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${badge.colorClass}`}>
-                    {badge.authority}
+                  <span className="exam-content-badge">
+                    {linkedExam ? "Practice available" : "Coming soon"}
                   </span>
                 </div>
                 <h2>{exam.name}</h2>
-                <p>{exam.tagline}</p>
-                <span className="exam-card-bottom flex items-center justify-between">
-                  <span>Start Practice &amp; CBT Mock</span>
-                  <ArrowRight size={15} />
-                </span>
+                <p>{exam.description}</p>
+                <div className="exam-card-actions">
+                  <button className="exam-card-bottom exam-card-action" type="button" onClick={() => onBrowseSubjects(exam.id)}>
+                    Browse subjects <ArrowRight size={15} />
+                  </button>
+                  {linkedExam && <button className="exam-card-bottom exam-card-action" type="button" onClick={() => onSelect(linkedExam.id)}>
+                    Start practice <ArrowRight size={15} />
+                  </button>}
+                </div>
                 <span className="exam-card-shape" />
-              </motion.button>
+              </motion.article>
             );
           })}
-        </div>
+          {!exams.length && !error && <div className="category-loading">No exams are currently available in {category.name}.</div>}
+        </div>}
       </div>
 
       <footer className="picker-footer">
@@ -2138,18 +2806,147 @@ function ExamPicker({ exams, onSelect, onProgress, profile, onAuth, onAdmin, tit
   );
 }
 
-function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onSubmit, onBack, onDismissError }: {
-  darkMode: boolean; onToggleTheme: () => void; kind: LoginKind | "choose"; busy: boolean; error: string;
-  onChoose: (kind: LoginKind) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+function StudentSubjectChapterPicker({ exam, subjects, questions, loading, error, questionLoading, questionError, onRetry, onBack, onStartChapter }: {
+  exam: PlatformExam;
+  subjects: PlatformSubject[];
+  questions: Question[];
+  loading: boolean;
+  error: string;
+  questionLoading: boolean;
+  questionError: string;
+  onRetry: () => void;
+  onBack: () => void;
+  onStartChapter: (subject: PlatformSubject, chapter: PlatformChapter) => void;
+}) {
+  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [chapters, setChapters] = useState<PlatformChapter[]>([]);
+  const [chaptersLoading, setChaptersLoading] = useState(false);
+  const [chaptersError, setChaptersError] = useState("");
+  const [chaptersReloadKey, setChaptersReloadKey] = useState(0);
+  const [selectedChapterId, setSelectedChapterId] = useState("");
+  const selectedSubject = subjects.find((subject) => subject.id === selectedSubjectId);
+  const selectedChapter = chapters.find((chapter) => chapter.id === selectedChapterId);
+  const selectedChapterQuestions = selectedSubject && selectedChapter
+    ? questionsForPlatformChapter(questions, exam, selectedSubject, selectedChapter)
+    : [];
+
+  useEffect(() => {
+    setSelectedSubjectId("");
+    setSelectedChapterId("");
+    setChapters([]);
+  }, [exam.id]);
+
+  useEffect(() => {
+    if (!selectedSubjectId) {
+      setChapters([]);
+      setChaptersError("");
+      setSelectedChapterId("");
+      return;
+    }
+    let active = true;
+    setChaptersLoading(true);
+    setChaptersError("");
+    setSelectedChapterId("");
+    fetch(`/api/exam-chapters?subjectId=${encodeURIComponent(selectedSubjectId)}`, { credentials: "same-origin" })
+      .then(async (response) => {
+        const result = await response.json() as { chapters?: PlatformChapter[]; error?: string };
+        if (!response.ok) throw new Error(result.error || "Could not load chapters.");
+        if (!Array.isArray(result.chapters)) throw new Error("The chapter service returned invalid data.");
+        if (active) setChapters(result.chapters);
+      })
+      .catch((reason: unknown) => {
+        if (active) setChaptersError(reason instanceof Error ? reason.message : "Could not load chapters.");
+      })
+      .finally(() => { if (active) setChaptersLoading(false); });
+    return () => { active = false; };
+  }, [selectedSubjectId, chaptersReloadKey]);
+
+  return <div className="page-stack student-catalog-page subject-chapter-picker">
+    <button className="back-link" type="button" onClick={onBack}><ArrowLeft size={16} /> Back to exams</button>
+    <section className="section-heading page-title"><div>
+      <span className="eyebrow"><BookOpen size={14} /> {exam.name.toUpperCase()}</span>
+      <h1>Choose a subject and chapter</h1>
+      <p>Select a subject to view its chapters.</p>
+    </div></section>
+    {error && <div className="login-error" role="alert"><CircleHelp size={17} />{error}<button className="button button-outline" onClick={onRetry}>Try again</button></div>}
+    {loading ? <div className="category-loading" role="status">Loading subjects…</div> : <>
+      <section className="question-stat-panel student-subject-panel">
+        <div className="section-heading"><div><h2>Subjects</h2><p>{subjects.length} available</p></div></div>
+        <div className="student-subject-list">
+          {subjects.map((subject) => <button
+            type="button"
+            key={subject.id}
+            className={`student-subject-option${subject.id === selectedSubjectId ? " selected" : ""}`}
+            aria-pressed={subject.id === selectedSubjectId}
+            onClick={() => setSelectedSubjectId(subject.id)}
+          ><Layers3 size={18} /><span>{subject.name}</span><ArrowRight size={16} /></button>)}
+          {!subjects.length && !error && <p className="table-empty">No subjects have been added to {exam.name} yet.</p>}
+        </div>
+      </section>
+      {selectedSubject && <section className="question-stat-panel student-chapter-panel">
+        <div className="section-heading"><div><h2>{selectedSubject.name} chapters</h2><p>Select a chapter to continue.</p></div></div>
+        {chaptersError && <div className="login-error" role="alert"><CircleHelp size={17} />{chaptersError}<button className="button button-outline" onClick={() => setChaptersReloadKey((current) => current + 1)}>Try again</button></div>}
+        {chaptersLoading ? <div className="category-loading" role="status">Loading chapters…</div> : <div className="student-chapter-list">
+          {chapters.map((chapter) => <button
+            type="button"
+            key={chapter.id}
+            className={`student-chapter-option${chapter.id === selectedChapterId ? " selected" : ""}`}
+            aria-pressed={chapter.id === selectedChapterId}
+            onClick={() => setSelectedChapterId(chapter.id)}
+          ><BookOpen size={17} /><span>{chapter.name}</span><small>{questionsForPlatformChapter(questions, exam, selectedSubject, chapter).length} questions</small>{chapter.id === selectedChapterId && <Check size={16} />}</button>)}
+          {!chapters.length && !chaptersError && <p className="table-empty">No chapters have been added to this subject yet.</p>}
+        </div>}
+        {selectedChapter && <div className="chapter-quiz-launch">
+          {questionLoading && <p role="status">Loading question bank…</p>}
+          {questionError && <p className="chapter-quiz-error" role="alert">{questionError}</p>}
+          {!questionLoading && !questionError && !selectedChapterQuestions.length && <p>Quiz questions for this chapter are not available yet.</p>}
+          <button type="button" className="button button-primary" disabled={questionLoading || !selectedChapterQuestions.length} onClick={() => onStartChapter(selectedSubject, selectedChapter)}>
+            Start chapter quiz <ArrowRight size={16} />
+          </button>
+        </div>}
+      </section>}
+    </>}
+  </div>;
+}
+
+function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onSubmit, onRegister, selectedStudentCategory, categories, categoriesLoading, categoriesError, onRetryCategories, onSelectStudentCategory, onBack, onDismissError }: {
+  darkMode: boolean; onToggleTheme: () => void; kind: LoginPage; busy: boolean; error: string;
+  onChoose: (kind: LoginPage) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onRegister: (input: StudentAccountInput) => Promise<void>;
+  selectedStudentCategory: ExamCategory | null;
+  categories: ExamCategory[];
+  categoriesLoading: boolean;
+  categoriesError: string;
+  onRetryCategories: () => void;
+  onSelectStudentCategory: (category: ExamCategory) => void;
   onBack: () => void; onDismissError: () => void;
 }) {
   const [typedId, setTypedId] = useState("");
   const [typedPassword, setTypedPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [studentMode, setStudentMode] = useState<"login" | "register">("login");
+  const [registrationError, setRegistrationError] = useState("");
 
   function fillDemo(studentId: string, pass: string) {
     setTypedId(studentId);
     setTypedPassword(pass);
+  }
+
+  async function submitRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setRegistrationError("");
+    try {
+      await onRegister({
+        name: String(data.get("name") ?? "").trim(),
+        studentId: String(data.get("studentId") ?? "").trim(),
+        password: String(data.get("password") ?? ""),
+        email: String(data.get("email") ?? "").trim(),
+        phone: String(data.get("phone") ?? "").trim(),
+      });
+    } catch (reason) {
+      setRegistrationError(reason instanceof Error ? reason.message : "Could not create your student account.");
+    }
   }
 
   return (
@@ -2157,15 +2954,15 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
       <header className="login-header">
         <a
           className="login-brand"
-          href="#"
-          onClick={(event) => { event.preventDefault(); onChoose("student"); }}
+          href="#home"
+          onClick={(event) => { event.preventDefault(); onBack(); }}
         >
           <span className="brand-mark"><GraduationCap size={23} /></span>
           <span><b>MBA Prep</b><small>EXAM PRACTICE</small></span>
         </a>
         <div className="login-header-actions">
           <ThemeToggle darkMode={darkMode} onToggle={onToggleTheme} />
-          <span className="login-header-note"><ShieldCheck size={16} /> Secure local authentication</span>
+          <span className="login-header-note"><ShieldCheck size={16} /> Secure server-side session</span>
         </div>
       </header>
 
@@ -2179,9 +2976,9 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
             transition={{ duration: 0.22 }}
             className="account-choice"
           >
-            <span className="eyebrow"><span className="eyebrow-dot" /> WELCOME TO YOUR PREPARATION SUITE</span>
-            <h1>Choose your account</h1>
-            <p>Sign in to continue to your personalized preparation space and exam analytics.</p>
+            <span className="eyebrow"><span className="eyebrow-dot" /> YOUR PREPARATION, YOUR WAY</span>
+            <h1>Welcome to your exam prep</h1>
+            <p>Choose your portal to continue. Student practice and administrator tools have separate sign-in flows.</p>
 
             <div className="account-choice-grid">
               <motion.button
@@ -2189,12 +2986,13 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
                 whileTap={{ scale: 0.98 }}
                 type="button"
                 className="account-choice-card student-choice"
-                onClick={() => onChoose("student")}
+                aria-label="Continue to Student exam categories"
+                onClick={() => onChoose("student-category")}
               >
                 <span className="account-choice-icon"><GraduationCap size={26} /></span>
-                <span className="account-choice-title">Student Portal</span>
-                <span className="account-choice-description">Practice CAT, CMAT, MAT and XAT questions, solve past papers, and review personal performance.</span>
-                <span className="account-choice-link">Sign in with Student ID <ArrowRight size={16} /></span>
+                <span className="account-choice-title">Student</span>
+                <span className="account-choice-description">Choose an exam category, then sign in or register for the student portal.</span>
+                <span className="account-choice-link">Enter Student Portal <ArrowRight size={16} /></span>
               </motion.button>
 
               <motion.button
@@ -2202,12 +3000,13 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
                 whileTap={{ scale: 0.98 }}
                 type="button"
                 className="account-choice-card admin-choice"
+                aria-label="Continue to Admin sign in"
                 onClick={() => onChoose("admin")}
               >
                 <span className="account-choice-icon"><ShieldCheck size={26} /></span>
-                <span className="account-choice-title">Admin Console</span>
-                <span className="account-choice-description">Manage question banks, AI PDF extractions, examine challenge reports, and create student accounts.</span>
-                <span className="account-choice-link">Secure administrator access <ArrowRight size={16} /></span>
+                <span className="account-choice-title">Admin</span>
+                <span className="account-choice-description">Manage question banks, PDF imports, student accounts, platform settings, and question reports.</span>
+                <span className="account-choice-link">Enter Admin Console <ArrowRight size={16} /></span>
                 <span className="admin-only-badge">AUTHORIZED ADMIN ONLY</span>
               </motion.button>
             </div>
@@ -2219,8 +3018,56 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
               </div>
             )}
             <div className="demo-login-note">
-              <Sparkles size={16} className="text-amber-500" /> Demo account data and test progress are securely isolated to your browser.
+              <Sparkles size={16} className="text-amber-500" /> Choose a portal to open its dedicated sign-in page.
             </div>
+          </motion.section>
+        ) : kind === "student-category" ? (
+          <motion.section
+            key="student-category"
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.22 }}
+            className="account-choice student-category-page"
+          >
+            <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to portal choices</button>
+            <span className="eyebrow"><span className="eyebrow-dot" /> STUDENT PORTAL</span>
+            <h1>Choose your exam category</h1>
+            <p>Select a category before continuing to student sign in or registration.</p>
+            {error && (
+              <div className="login-error login-chooser-error">
+                <CircleHelp size={17} />{error}
+                <button onClick={onDismissError} aria-label="Dismiss message"><X size={15} /></button>
+              </div>
+            )}
+            {categoriesError && <div className="login-error category-load-error" role="alert">
+              <CircleHelp size={17} />{categoriesError}
+              <button type="button" className="button button-outline" onClick={onRetryCategories}>Try again</button>
+            </div>}
+            {categoriesLoading ? <div className="category-loading" role="status">Loading available exam categories…</div>
+              : !categoriesError && categories.length === 0 ? <div className="category-loading">No active exam categories are available right now.</div>
+              : <div className="student-category-grid">
+              {categories.filter((category) => category.active).map((category) => (
+                <motion.button
+                  key={category.id}
+                  type="button"
+                  whileHover={{ y: -3 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="student-category-card"
+                  onClick={() => {
+                    setStudentMode("login");
+                    setRegistrationError("");
+                    onSelectStudentCategory(category);
+                  }}
+                >
+                  <span className="account-choice-icon"><GraduationCap size={23} /></span>
+                  <span className="student-category-name">{category.name}</span>
+                  <span className="student-category-description">{category.description}</span>
+                  <span className="account-choice-link">Continue <ArrowRight size={15} /></span>
+                </motion.button>
+              ))}
+            </div>
+            }
           </motion.section>
         ) : (
           <motion.section
@@ -2231,91 +3078,104 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
             transition={{ duration: 0.22 }}
             className="login-form-card"
           >
-            <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Switch account type</button>
+            <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> {kind === "student" ? "Change exam category" : "Back to Student / Admin choices"}</button>
             <div className={`login-form-icon ${kind === "admin" ? "login-form-admin" : ""}`}>
               {kind === "admin" ? <ShieldCheck size={27} /> : <GraduationCap size={27} />}
             </div>
             <span className="eyebrow">{kind === "admin" ? "RESTRICTED ACCESS" : "STUDENT WORKSPACE"}</span>
-            <h1>{kind === "admin" ? "Admin Login" : "Student Login"}</h1>
-            <p>{kind === "admin" ? "Sign in with your private administrative credentials." : "Enter your Student ID and password to access question banks and mock tests."}</p>
+            <h1>{kind === "admin" ? "Admin Login" : "Student Login / Registration"}</h1>
+            <p>{kind === "admin"
+              ? "Sign in with your private administrative credentials."
+              : `Selected category: ${selectedStudentCategory?.name ?? "Not selected"}. Sign in or create a student account to continue.`}</p>
 
-            {error && <div className="login-error"><CircleHelp size={17} />{error}</div>}
+            {kind === "student" && (
+              <div className="student-auth-tabs" role="tablist" aria-label="Student account options">
+                <button type="button" role="tab" aria-selected={studentMode === "login"} className={studentMode === "login" ? "active" : ""} onClick={() => { setStudentMode("login"); setRegistrationError(""); onDismissError(); }}>Login</button>
+                <button type="button" role="tab" aria-selected={studentMode === "register"} className={studentMode === "register" ? "active" : ""} onClick={() => { setStudentMode("register"); setRegistrationError(""); onDismissError(); }}>Register</button>
+              </div>
+            )}
 
-            <form className="editor-form login-form" onSubmit={onSubmit}>
-              <label className="form-label">
-                <span>{kind === "admin" ? "Admin ID" : "Student ID"}</span>
-                <input
-                  name="studentId"
-                  value={typedId}
-                  onChange={(e) => setTypedId(e.target.value)}
-                  placeholder={kind === "admin" ? "Enter 'admin'" : "Enter Student ID (e.g. STU101)"}
-                  required
-                  autoComplete="username"
-                />
-              </label>
-
-              <label className="form-label">
-                <span>{kind === "admin" ? "Admin Password" : "Password"}</span>
-                <div className="relative flex items-center">
-                  <input
-                    name="password"
-                    type={showPassword ? "text" : "password"}
-                    value={typedPassword}
-                    onChange={(e) => setTypedPassword(e.target.value)}
-                    placeholder="Enter password"
-                    required
-                    autoComplete="current-password"
-                    className="w-full pr-10"
-                  />
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    className="absolute right-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                    onClick={() => setShowPassword(!showPassword)}
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                  >
-                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            {kind === "student" && studentMode === "register" ? (
+              <>
+                {registrationError && <div className="login-error"><CircleHelp size={17} />{registrationError}</div>}
+                <form className="editor-form login-form" onSubmit={(event) => void submitRegistration(event)}>
+                  <Field label="Full name" name="name" placeholder="Your name" required autoComplete="name" />
+                  <Field label="Student ID" name="studentId" placeholder="Choose a Student ID" required autoComplete="username" />
+                  <Field label="Password" name="password" type="password" placeholder="At least 8 characters" minLength={8} required autoComplete="new-password" />
+                  <Field label="Email (optional)" name="email" type="email" placeholder="you@example.com" autoComplete="email" />
+                  <Field label="Phone number (optional)" name="phone" type="tel" placeholder="Phone number" autoComplete="tel" />
+                  <button className="button button-primary button-full mt-2" disabled={busy}>
+                    {busy ? "Creating account…" : "Create Student Account"}
                   </button>
-                </div>
-              </label>
+                </form>
+              </>
+            ) : (
+              <>
+                {error && <div className="login-error"><CircleHelp size={17} />{error}</div>}
+                <form className="editor-form login-form" onSubmit={onSubmit}>
+                  <label className="form-label">
+                    <span>{kind === "admin" ? "Admin ID" : "Student ID"}</span>
+                    <input
+                      name="studentId"
+                      value={typedId}
+                      onChange={(e) => setTypedId(e.target.value)}
+                      placeholder={kind === "admin" ? "Enter 'admin'" : "Enter Student ID (e.g. STU101)"}
+                      required
+                      autoComplete="username"
+                    />
+                  </label>
 
-              <button className="button button-primary button-full mt-2" disabled={busy}>
-                {busy ? "Authenticating…" : kind === "admin" ? "Login to Admin Console" : "Enter Practice Portal"}
-              </button>
-            </form>
+                  <label className="form-label">
+                    <span>{kind === "admin" ? "Admin Password" : "Password"}</span>
+                    <div className="relative flex items-center">
+                      <input
+                        name="password"
+                        type={showPassword ? "text" : "password"}
+                        value={typedPassword}
+                        onChange={(e) => setTypedPassword(e.target.value)}
+                        placeholder="Enter password"
+                        required
+                        autoComplete="current-password"
+                        className="w-full pr-10"
+                      />
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        className="absolute right-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                        onClick={() => setShowPassword(!showPassword)}
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                  </label>
+
+                  <button className="button button-primary button-full mt-2" disabled={busy}>
+                    {busy ? "Authenticating…" : kind === "admin" ? "Login to Admin Console" : "Enter Practice Portal"}
+                  </button>
+                </form>
 
             {/* Quick Demo Pre-Fill Helper */}
-            <div className="demo-fill-box mt-4 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-xs">
+            {studentMode === "login" && kind === "student" && <div className="demo-fill-box mt-4 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-xs">
               <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1.5 font-semibold">
                 <span>Quick Demo Fill:</span>
                 <span className="text-[10px] uppercase tracking-wider text-indigo-500">1-Click</span>
               </div>
-              {kind === "admin" ? (
-                <button
-                  type="button"
-                  className="w-full text-left p-1.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors flex items-center justify-between"
-                  onClick={() => fillDemo("admin", "admin123456")}
-                >
-                  <span>Admin: <b>admin</b></span>
-                  <span className="text-indigo-500 text-[11px] font-bold">Use Credentials →</span>
-                </button>
-              ) : (
-                <div className="space-y-1">
-                  <button
-                    type="button"
-                    className="w-full text-left p-1.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors flex items-center justify-between"
-                    onClick={() => fillDemo("STU101", "student123")}
-                  >
-                    <span>Sample Student: <b>STU101</b></span>
-                    <span className="text-indigo-500 text-[11px] font-bold">Use Credentials →</span>
-                  </button>
-                </div>
-              )}
-            </div>
+              <button
+                type="button"
+                className="w-full text-left p-1.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors flex items-center justify-between"
+                onClick={() => fillDemo("STU101", "student123")}
+              >
+                <span>Sample Student: <b>STU101</b></span>
+                <span className="text-indigo-500 text-[11px] font-bold">Use Credentials →</span>
+              </button>
+            </div>}
+              </>
+            )}
 
-            <div className="admin-login-security mt-4">
-              <ShieldCheck size={16} /> Data is secured via PBKDF2 cryptography and verified locally.
-            </div>
+            {kind === "admin" && <div className="admin-login-security mt-4">
+              <ShieldCheck size={16} /> Administrator access is verified by the server.
+            </div>}
           </motion.section>
         )}
       </AnimatePresence>
@@ -2580,6 +3440,360 @@ function QuestionReportsPanel({ reports, questions, isAdmin, historyRevision, on
         </>}
       </article>}
     </div>}
+  </div>;
+}
+
+function AdminCategoriesPanel({ categories, loading, error, onRetry, onSave, onDelete }: {
+  categories: ExamCategory[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onSave: (input: Pick<ExamCategory, "name" | "description" | "active">, id?: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<ExamCategory | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [active, setActive] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  function resetForm() {
+    setEditing(null);
+    setName("");
+    setDescription("");
+    setActive(true);
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setActionError("");
+    try {
+      await onSave({ name, description, active }, editing?.id);
+      resetForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not save exam category.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateCategory(category: ExamCategory, patch: Pick<ExamCategory, "name" | "description" | "active">) {
+    setBusy(true);
+    setActionError("");
+    try {
+      await onSave(patch, category.id);
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not update exam category.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeCategory(category: ExamCategory) {
+    if (!window.confirm(`Delete the "${category.name}" category?`)) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onDelete(category.id);
+      if (editing?.id === category.id) resetForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not delete exam category.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="page-stack admin-page">
+    <section className="section-heading page-title"><div><span className="eyebrow"><GraduationCap size={14} /> STUDENT PORTAL</span><h1>Exam Categories</h1><p>Create and manage the categories shown to students before sign-in.</p></div></section>
+    {(error || actionError) && <div className="login-error" role="alert"><CircleHelp size={17} />{actionError || error}{error && !actionError && <button className="button button-outline" onClick={onRetry}>Try again</button>}</div>}
+    <form className="question-stat-panel editor-form category-editor-form" onSubmit={(event) => void submit(event)}>
+      <div className="section-heading"><div><h2>{editing ? "Edit category" : "Add category"}</h2><p>Inactive categories remain manageable here but are hidden from students.</p></div></div>
+      <div className="category-form-fields">
+        <label className="form-label">Category name<input value={name} onChange={(event) => setName(event.target.value)} minLength={2} maxLength={80} required placeholder="e.g. Teaching Exams" /></label>
+        <label className="form-label">Description <span className="optional">(optional)</span><input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={300} placeholder="Briefly describe the exam category" /></label>
+        <label className="category-active-toggle"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Active and visible to students</label>
+      </div>
+      <div className="category-form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? "Saving…" : editing ? "Save changes" : "Add category"}</button>{editing && <button className="button button-outline" type="button" onClick={resetForm} disabled={busy}>Cancel</button>}</div>
+    </form>
+    <section className="question-stat-panel">
+      <div className="section-heading"><div><h2>All categories</h2><p>{categories.length} {categories.length === 1 ? "category" : "categories"} configured</p></div></div>
+      {loading ? <div className="category-loading" role="status">Loading categories…</div> : <div className="table-wrap"><table><thead><tr><th>Category</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        {categories.map((category) => <tr key={category.id}>
+          <td><b>{category.name}</b></td><td>{category.description || "—"}</td>
+          <td><span className={`category-status ${category.active ? "category-status-active" : "category-status-inactive"}`}>{category.active ? "Active" : "Inactive"}</span></td>
+          <td><div className="table-actions">
+            <button type="button" disabled={busy} onClick={() => { setEditing(category); setName(category.name); setDescription(category.description); setActive(category.active); }}>Edit</button>
+            <button type="button" disabled={busy} onClick={() => void updateCategory(category, { name: category.name, description: category.description, active: !category.active })}>{category.active ? "Deactivate" : "Activate"}</button>
+            <button type="button" className="delete-action" disabled={busy} aria-label={`Delete ${category.name}`} onClick={() => void removeCategory(category)}><Trash2 size={16} /></button>
+          </div></td>
+        </tr>)}
+        {!categories.length && <tr><td colSpan={4} className="table-empty">No categories have been created.</td></tr>}
+      </tbody></table></div>}
+    </section>
+  </div>;
+}
+
+function AdminExamsPanel({ categories, exams, quizExams, loading, error, onRetry, onSave, onDelete }: {
+  categories: ExamCategory[];
+  exams: PlatformExam[];
+  quizExams: Exam[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onSave: (input: Pick<PlatformExam, "categoryId" | "name" | "description" | "active" | "quizExamId">, id?: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<PlatformExam | null>(null);
+  const [categoryId, setCategoryId] = useState(categories[0]?.id ?? "");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [active, setActive] = useState(true);
+  const [quizExamId, setQuizExamId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  useEffect(() => {
+    if (!categories.some((category) => category.id === categoryId) && categories[0]) setCategoryId(categories[0].id);
+  }, [categories, categoryId]);
+
+  function resetForm() {
+    setEditing(null);
+    setCategoryId(categories[0]?.id ?? "");
+    setName("");
+    setDescription("");
+    setActive(true);
+    setQuizExamId("");
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setActionError("");
+    try {
+      await onSave({ categoryId, name, description, active, quizExamId }, editing?.id);
+      resetForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not save exam.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateExam(exam: PlatformExam, patch: Pick<PlatformExam, "categoryId" | "name" | "description" | "active" | "quizExamId">) {
+    setBusy(true);
+    setActionError("");
+    try {
+      await onSave(patch, exam.id);
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not update exam.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeExam(exam: PlatformExam) {
+    if (!window.confirm(`Delete "${exam.name}" from the exam catalog?`)) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onDelete(exam.id);
+      if (editing?.id === exam.id) resetForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not delete exam.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const categoryName = (id: string) => categories.find((category) => category.id === id)?.name ?? "Category unavailable";
+  const statusMessage = actionError || error;
+  return <div className="page-stack admin-page">
+    <section className="section-heading page-title"><div><span className="eyebrow"><BookOpen size={14} /> STUDENT PORTAL</span><h1>Exam Management</h1><p>Add exams to a category and optionally connect an existing quiz bank.</p></div></section>
+    {statusMessage && <div className="login-error" role="alert"><CircleHelp size={17} />{statusMessage}{error && !actionError && <button className="button button-outline" onClick={onRetry}>Try again</button>}</div>}
+    {!categories.length && !loading && <div className="category-loading">Create an exam category before adding exams.</div>}
+    <form className="question-stat-panel editor-form category-editor-form" onSubmit={(event) => void submit(event)}>
+      <div className="section-heading"><div><h2>{editing ? "Edit exam" : "Add exam"}</h2><p>Only active exams in active categories appear in the Student Portal.</p></div></div>
+      <div className="category-form-fields">
+        <label className="form-label">Exam name<input value={name} onChange={(event) => setName(event.target.value)} minLength={2} maxLength={100} required placeholder="e.g. National Entrance Exam" /></label>
+        <label className="form-label">Category<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)} required>
+          <option value="" disabled>Select a category</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.active ? "" : " (Inactive)"}</option>)}
+        </select></label>
+        <label className="form-label">Description <span className="optional">(optional)</span><input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={300} placeholder="Brief exam description" /></label>
+        <label className="form-label">Existing quiz bank <span className="optional">(optional)</span><select value={quizExamId} onChange={(event) => setQuizExamId(event.target.value)}>
+          <option value="">No quiz bank linked</option>{quizExams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name}</option>)}
+        </select></label>
+        <label className="category-active-toggle"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Active and visible to students</label>
+      </div>
+      <div className="category-form-actions"><button className="button button-primary" type="submit" disabled={busy || !categories.length}>{busy ? "Saving…" : editing ? "Save changes" : "Add exam"}</button>{editing && <button className="button button-outline" type="button" onClick={resetForm} disabled={busy}>Cancel</button>}</div>
+    </form>
+    <section className="question-stat-panel">
+      <div className="section-heading"><div><h2>All exams</h2><p>{exams.length} {exams.length === 1 ? "exam" : "exams"} configured</p></div></div>
+      {loading ? <div className="category-loading" role="status">Loading exams…</div> : <div className="table-wrap"><table><thead><tr><th>Exam</th><th>Category</th><th>Quiz bank</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        {exams.map((exam) => <tr key={exam.id}>
+          <td><b>{exam.name}</b>{exam.description && <small className="exam-admin-description">{exam.description}</small>}</td>
+          <td>{categoryName(exam.categoryId)}</td>
+          <td>{quizExams.find((item) => item.id === exam.quizExamId)?.name ?? "Not linked"}</td>
+          <td><span className={`category-status ${exam.active ? "category-status-active" : "category-status-inactive"}`}>{exam.active ? "Active" : "Inactive"}</span></td>
+          <td><div className="table-actions">
+            <button type="button" disabled={busy} onClick={() => { setEditing(exam); setCategoryId(exam.categoryId); setName(exam.name); setDescription(exam.description); setActive(exam.active); setQuizExamId(exam.quizExamId ?? ""); }}>Edit</button>
+            <button type="button" disabled={busy} onClick={() => void updateExam(exam, { categoryId: exam.categoryId, name: exam.name, description: exam.description, active: !exam.active, quizExamId: exam.quizExamId ?? "" })}>{exam.active ? "Deactivate" : "Activate"}</button>
+            <button type="button" className="delete-action" disabled={busy} aria-label={`Delete ${exam.name}`} onClick={() => void removeExam(exam)}><Trash2 size={16} /></button>
+          </div></td>
+        </tr>)}
+        {!exams.length && <tr><td colSpan={5} className="table-empty">No exams have been created.</td></tr>}
+      </tbody></table></div>}
+    </section>
+  </div>;
+}
+
+function AdminSubjectsPanel({ exams, selectedExamId, onSelectExam, subjects, chapters, loading, error, onRetry, onSaveSubject, onDeleteSubject, onSaveChapter, onDeleteChapter }: {
+  exams: PlatformExam[];
+  selectedExamId: string;
+  onSelectExam: (id: string) => void;
+  subjects: PlatformSubject[];
+  chapters: PlatformChapter[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onSaveSubject: (input: Pick<PlatformSubject, "examId" | "name">, id?: string) => Promise<void>;
+  onDeleteSubject: (id: string) => Promise<void>;
+  onSaveChapter: (input: Pick<PlatformChapter, "subjectId" | "name">, id?: string) => Promise<void>;
+  onDeleteChapter: (id: string) => Promise<void>;
+}) {
+  const [selectedSubjectId, setSelectedSubjectId] = useState("");
+  const [editingSubject, setEditingSubject] = useState<PlatformSubject | null>(null);
+  const [subjectName, setSubjectName] = useState("");
+  const [editingChapter, setEditingChapter] = useState<PlatformChapter | null>(null);
+  const [chapterName, setChapterName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const selectedSubject = subjects.find((subject) => subject.id === selectedSubjectId);
+
+  useEffect(() => {
+    if (!subjects.some((subject) => subject.id === selectedSubjectId)) setSelectedSubjectId(subjects[0]?.id ?? "");
+  }, [selectedSubjectId, subjects]);
+
+  function resetSubjectForm() {
+    setEditingSubject(null);
+    setSubjectName("");
+  }
+  function resetChapterForm() {
+    setEditingChapter(null);
+    setChapterName("");
+  }
+  async function submitSubject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedExamId) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onSaveSubject({ examId: selectedExamId, name: subjectName }, editingSubject?.id);
+      resetSubjectForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not save subject.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function removeSubject(subject: PlatformSubject) {
+    if (!window.confirm(`Delete "${subject.name}" and all of its chapters?`)) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onDeleteSubject(subject.id);
+      if (editingSubject?.id === subject.id) resetSubjectForm();
+      if (selectedSubjectId === subject.id) setSelectedSubjectId("");
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not delete subject.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function submitChapter(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedSubject) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onSaveChapter({ subjectId: selectedSubject.id, name: chapterName }, editingChapter?.id);
+      resetChapterForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not save chapter.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function removeChapter(chapter: PlatformChapter) {
+    if (!window.confirm(`Delete the "${chapter.name}" chapter?`)) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onDeleteChapter(chapter.id);
+      if (editingChapter?.id === chapter.id) resetChapterForm();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : "Could not delete chapter.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedExam = exams.find((exam) => exam.id === selectedExamId);
+  const subjectChapters = chapters.filter((chapter) => chapter.subjectId === selectedSubjectId);
+  return <div className="page-stack admin-page">
+    <section className="section-heading page-title"><div><span className="eyebrow"><Layers3 size={14} /> CONTENT MANAGEMENT</span><h1>Subjects &amp; Chapters</h1><p>Organize each exam into dynamic subjects and chapters for students.</p></div></section>
+    {(error || actionError) && <div className="login-error" role="alert"><CircleHelp size={17} />{actionError || error}{error && !actionError && <button className="button button-outline" onClick={onRetry}>Try again</button>}</div>}
+    <section className="question-stat-panel subject-admin-panel">
+      <label className="form-label">Exam<select value={selectedExamId} onChange={(event) => {
+        onSelectExam(event.target.value);
+        setSelectedSubjectId("");
+        resetSubjectForm();
+        resetChapterForm();
+      }} required>
+        <option value="" disabled>Select an exam</option>
+        {exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name}</option>)}
+      </select></label>
+      {!exams.length && <p className="table-empty">Create an exam before adding subjects.</p>}
+    </section>
+    {selectedExam && <>
+      <form className="question-stat-panel editor-form category-editor-form" onSubmit={(event) => void submitSubject(event)}>
+        <div className="section-heading"><div><h2>{editingSubject ? "Edit subject" : "Add subject"}</h2><p>Subjects belong to {selectedExam.name}.</p></div></div>
+        <label className="form-label">Subject name<input value={subjectName} onChange={(event) => setSubjectName(event.target.value)} minLength={2} maxLength={100} required placeholder="e.g. Mathematics" /></label>
+        <div className="category-form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? "Saving…" : editingSubject ? "Save changes" : "Add subject"}</button>{editingSubject && <button className="button button-outline" type="button" onClick={resetSubjectForm} disabled={busy}>Cancel</button>}</div>
+      </form>
+      <section className="question-stat-panel subject-admin-panel">
+        <div className="section-heading"><div><h2>{selectedExam.name} subjects</h2><p>{subjects.length} configured</p></div></div>
+        {loading ? <div className="category-loading" role="status">Loading subjects and chapters…</div> : <div className="table-wrap"><table><thead><tr><th>Subject</th><th>Chapters</th><th>Actions</th></tr></thead><tbody>
+          {subjects.map((subject) => <tr key={subject.id} className={subject.id === selectedSubjectId ? "subject-admin-selected" : ""}>
+            <td><button className="subject-admin-select" type="button" onClick={() => { setSelectedSubjectId(subject.id); resetChapterForm(); }}>{subject.name}</button></td>
+            <td>{chapters.filter((chapter) => chapter.subjectId === subject.id).length}</td>
+            <td><div className="table-actions">
+              <button type="button" disabled={busy} onClick={() => { setSelectedSubjectId(subject.id); setEditingSubject(subject); setSubjectName(subject.name); }}>Edit</button>
+              <button type="button" disabled={busy} onClick={() => { setSelectedSubjectId(subject.id); resetChapterForm(); }}>Manage chapters</button>
+              <button type="button" className="delete-action" disabled={busy} aria-label={`Delete ${subject.name}`} onClick={() => void removeSubject(subject)}><Trash2 size={16} /></button>
+            </div></td>
+          </tr>)}
+          {!subjects.length && <tr><td colSpan={3} className="table-empty">No subjects have been created for this exam.</td></tr>}
+        </tbody></table></div>}
+      </section>
+      {selectedSubject && <section className="question-stat-panel subject-admin-panel">
+        <div className="section-heading"><div><h2>{selectedSubject.name} chapters</h2><p>Chapters are scoped to this subject.</p></div></div>
+        <form className="chapter-admin-form" onSubmit={(event) => void submitChapter(event)}>
+          <label className="form-label">Chapter name<input value={chapterName} onChange={(event) => setChapterName(event.target.value)} minLength={2} maxLength={100} required placeholder="e.g. Number Systems" /></label>
+          <div className="category-form-actions"><button className="button button-primary" type="submit" disabled={busy}>{busy ? "Saving…" : editingChapter ? "Save changes" : "Add chapter"}</button>{editingChapter && <button className="button button-outline" type="button" onClick={resetChapterForm} disabled={busy}>Cancel</button>}</div>
+        </form>
+        <div className="table-wrap"><table><thead><tr><th>Chapter</th><th>Actions</th></tr></thead><tbody>
+          {subjectChapters.map((chapter) => <tr key={chapter.id}>
+            <td><b>{chapter.name}</b></td><td><div className="table-actions">
+              <button type="button" disabled={busy} onClick={() => { setEditingChapter(chapter); setChapterName(chapter.name); }}>Edit</button>
+              <button type="button" className="delete-action" disabled={busy} aria-label={`Delete ${chapter.name}`} onClick={() => void removeChapter(chapter)}><Trash2 size={16} /></button>
+            </div></td>
+          </tr>)}
+          {!subjectChapters.length && <tr><td colSpan={2} className="table-empty">No chapters have been created for this subject.</td></tr>}
+        </tbody></table></div>
+      </section>}
+    </>}
   </div>;
 }
 

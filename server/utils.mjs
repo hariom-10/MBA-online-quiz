@@ -1,31 +1,38 @@
 import { readFile } from "node:fs/promises";
-import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
-export const adminSalt = "mba-prep-initial-admin-v1";
-export const adminHash = "a5a00b9a04a9dfc91b8d3aff26a7005515a478ac50348aa1a46fe13579e419e2";
 export const adminSessions = new Map();
 export const sessionCookie = "mba_admin_session";
+export const studentSessionCookie = "mba_student_session";
 export const sessionLifetimeMs = 8 * 60 * 60 * 1000;
 
-const sessionSecret = process.env.SESSION_SECRET || process.env.ADMIN_PASSWORD || process.env.VITE_ADMIN_PASSWORD || "mba-prep-admin-secret-key-v1";
+function getSessionSecret() {
+  const secret = process.env.SESSION_SECRET;
+  return typeof secret === "string" && secret.length >= 32 ? secret : null;
+}
 
 function signToken(payload) {
+  const secret = getSessionSecret();
+  if (!secret) throw new Error("Admin session signing is not configured.");
   const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = createHmac("sha256", sessionSecret).update(data).digest("base64url");
+  const sig = createHmac("sha256", secret).update(data).digest("base64url");
   return `${data}.${sig}`;
 }
 
-function verifyToken(token) {
+function verifyToken(token, role) {
   if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const secret = getSessionSecret();
+  if (!secret) return null;
   const [data, sig] = token.split(".");
   if (!data || !sig) return null;
-  const expectedSig = createHmac("sha256", sessionSecret).update(data).digest("base64url");
+  const expectedSig = createHmac("sha256", secret).update(data).digest("base64url");
   const sigBuf = Buffer.from(sig);
   const expBuf = Buffer.from(expectedSig);
   if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
   try {
     const payload = JSON.parse(Buffer.from(data, "base64url").toString("utf8"));
-    if (!payload || payload.expiresAt <= Date.now()) return null;
+    if (!payload || !Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()
+      || payload.profile?.role !== role || typeof payload.profile?.uid !== "string") return null;
     return payload.profile;
   } catch {
     return null;
@@ -69,18 +76,37 @@ export function sameOrigin(req) {
 export function currentAdmin(req) {
   const token = parseCookies(req.headers.cookie)[sessionCookie];
   if (!token) return null;
-  const verified = verifyToken(token);
-  if (verified) return verified;
+  const verified = verifyToken(token, "admin");
+  if (verified?.uid === "local-admin") return verified;
   const session = adminSessions.get(token);
-  if (session && session.expiresAt > Date.now()) return session.profile;
+  if (session && session.expiresAt > Date.now()
+    && session.profile?.role === "admin" && session.profile?.uid === "local-admin") return session.profile;
   return null;
+}
+
+export function currentStudent(req) {
+  const token = parseCookies(req.headers.cookie)[studentSessionCookie];
+  if (!token) return null;
+  return verifyToken(token, "student");
 }
 
 export function createAdminSession(req, res) {
   const profile = { uid: "local-admin", name: "Administrator", email: "", studentId: "admin", role: "admin", status: "active", createdAt: new Date().toISOString(), lastLogin: new Date().toISOString() };
   const token = signToken({ profile, expiresAt: Date.now() + sessionLifetimeMs });
   adminSessions.set(token, { profile, expiresAt: Date.now() + sessionLifetimeMs });
-  res.setHeader("Set-Cookie", `${sessionCookie}=${token}; ${cookieOptions(req, sessionLifetimeMs / 1000)}`);
+  res.setHeader("Set-Cookie", [
+    `${sessionCookie}=${token}; ${cookieOptions(req, sessionLifetimeMs / 1000)}`,
+    `${studentSessionCookie}=; ${cookieOptions(req, 0)}`,
+  ]);
+  return profile;
+}
+
+export function createStudentSession(req, res, profile) {
+  const token = signToken({ profile, expiresAt: Date.now() + sessionLifetimeMs });
+  res.setHeader("Set-Cookie", [
+    `${studentSessionCookie}=${token}; ${cookieOptions(req, sessionLifetimeMs / 1000)}`,
+    `${sessionCookie}=; ${cookieOptions(req, 0)}`,
+  ]);
   return profile;
 }
 

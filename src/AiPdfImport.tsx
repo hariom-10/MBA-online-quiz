@@ -9,8 +9,6 @@ import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { runAiWithFailover } from "./aiApiKeyStore";
 import { ApiKeyManager } from "./ApiKeyManager";
 import { PdfGraphSnipper } from "./PdfGraphSnipper";
-import { firestore, isFirebaseConfigured } from "./firebase";
-import { collection, deleteDoc, doc, getDocs, setDoc } from "firebase/firestore";
 
 // Set the pdf.js worker source for client-side PDF text extraction
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
@@ -318,47 +316,28 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   const [showApiKeysModal, setShowApiKeysModal] = useState(false);
   const [snippingItem, setSnippingItem] = useState<ReviewItem | null>(null);
 
-  // Sync extracted papers from client Firestore and backend on mount
+  // Paper records are available only through the Admin-authorized server API.
   useEffect(() => {
-    // 1. Client-side Firestore direct sync
-    if (isFirebaseConfigured && firestore) {
-      getDocs(collection(firestore, "extractedPapers"))
-        .then((snapshot) => {
-          if (!snapshot.empty) {
-            const remotePapers = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }) as ExtractedPaper);
-            setExtractedPapers((current) => {
-              const map = new Map<string, ExtractedPaper>();
-              current.forEach((p) => map.set(p.id, p));
-              remotePapers.forEach((p) => map.set(p.id, p));
-              const merged = Array.from(map.values()).sort((a, b) => String(b.extractedAt || "").localeCompare(String(a.extractedAt || "")));
-              localStorage.setItem(PAPERS_STORAGE_KEY, JSON.stringify(merged));
-              return merged;
-            });
-          }
-        })
-        .catch(() => {
-          /* Local storage fallback already active */
+    let active = true;
+    void fetch("/api/admin/papers", { credentials: "same-origin" })
+      .then(async (response) => {
+        const data = await response.json() as { papers?: ExtractedPaper[]; error?: string };
+        if (!response.ok) throw new Error(data.error || "Could not load paper records.");
+        if (!Array.isArray(data.papers)) throw new Error("Paper service returned invalid data.");
+        if (!active) return;
+        setExtractedPapers((current) => {
+          const map = new Map<string, ExtractedPaper>();
+          current.forEach((paper) => map.set(paper.id, paper));
+          data.papers?.forEach((paper) => map.set(paper.id, paper));
+          const merged = Array.from(map.values()).sort((a, b) => String(b.extractedAt || "").localeCompare(String(a.extractedAt || "")));
+          localStorage.setItem(PAPERS_STORAGE_KEY, JSON.stringify(merged));
+          return merged;
         });
-    }
-
-    // 2. Backend endpoint sync (if serverless database configured)
-    fetch("/api/admin/papers")
-      .then((res) => (res.ok ? res.json() : Promise.reject()))
-      .then((data: { papers?: ExtractedPaper[] }) => {
-        if (Array.isArray(data.papers) && data.papers.length > 0) {
-          setExtractedPapers((current) => {
-            const map = new Map<string, ExtractedPaper>();
-            current.forEach((p) => map.set(p.id, p));
-            data.papers?.forEach((p) => map.set(p.id, p));
-            const merged = Array.from(map.values()).sort((a, b) => String(b.extractedAt || "").localeCompare(String(a.extractedAt || "")));
-            localStorage.setItem(PAPERS_STORAGE_KEY, JSON.stringify(merged));
-            return merged;
-          });
-        }
       })
-      .catch(() => {
-        // LocalStorage fallback already loaded
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Could not load paper records.");
       });
+    return () => { active = false; };
   }, []);
 
   const pending = items.filter((item) => item.status === "pending");
@@ -394,52 +373,37 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
   }
 
   async function persistPaperRecord(record: ExtractedPaper) {
+    const response = await fetch("/api/admin/papers", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    const result = await response.json() as { error?: string; success?: boolean };
+    if (!response.ok) throw new Error(result.error || "Could not save paper record.");
+    if (result.success !== true) throw new Error("Paper service did not confirm the save.");
+
     setExtractedPapers((current) => {
-      const filtered = current.filter((p) => p.id !== record.id);
-      const next = [record, ...filtered];
+      const next = [record, ...current.filter((paper) => paper.id !== record.id)];
       localStorage.setItem(PAPERS_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
-
-    if (isFirebaseConfigured && firestore) {
-      try {
-        await setDoc(doc(firestore, "extractedPapers", record.id), record, { merge: true });
-      } catch (err) {
-        console.warn("Client Firestore paper save note:", err);
-      }
-    }
-
-    try {
-      await fetch("/api/admin/papers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(record),
-      });
-    } catch {
-      // Saved in client-side Firestore & localStorage
-    }
   }
 
   async function deletePaperRecord(id: string) {
+    const response = await fetch(`/api/admin/papers?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const result = await response.json() as { error?: string; success?: boolean };
+    if (!response.ok) throw new Error(result.error || "Could not delete paper record.");
+    if (result.success !== true) throw new Error("Paper service did not confirm the deletion.");
+
     setExtractedPapers((current) => {
       const next = current.filter((p) => p.id !== id);
       localStorage.setItem(PAPERS_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
-
-    if (isFirebaseConfigured && firestore) {
-      try {
-        await deleteDoc(doc(firestore, "extractedPapers", id));
-      } catch (err) {
-        console.warn("Client Firestore paper delete note:", err);
-      }
-    }
-
-    try {
-      await fetch(`/api/admin/papers?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-    } catch {
-      // Deleted from client-side Firestore & localStorage
-    }
   }
 
   async function runOcr(selectedFile: File): Promise<{ text: string; failedPages: number[]; lowConfidencePages: number[] }> {
@@ -763,7 +727,9 @@ export function AiPdfImport({ exams, sections, chapters, questions, importedBy, 
       status,
     };
 
-    void persistPaperRecord(updated);
+    void persistPaperRecord(updated).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : "Could not update paper record.");
+    });
   }
 
   async function retryFailed(entry: ReviewItem) {
