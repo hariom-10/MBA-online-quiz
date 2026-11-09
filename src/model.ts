@@ -2,6 +2,42 @@ export type Difficulty = "Easy" | "Medium" | "Hard";
 export type Answer = "A" | "B" | "C" | "D" | "E";
 
 export type Exam = { id: string; name: string; tagline: string; color: string };
+export type ExamCategory = {
+  id: string;
+  name: string;
+  description: string;
+  active: boolean;
+  order?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+export type PlatformExam = {
+  id: string;
+  categoryId: string;
+  name: string;
+  description: string;
+  active: boolean;
+  quizExamId?: string;
+  order?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+export type PlatformSubject = {
+  id: string;
+  examId: string;
+  name: string;
+  order?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+export type PlatformChapter = {
+  id: string;
+  subjectId: string;
+  name: string;
+  order?: number;
+  createdAt: string;
+  updatedAt: string;
+};
 export type Section = { id: string; examId: string; name: string };
 export type Chapter = { id: string; examId: string; sectionId: string; name: string };
 export type Question = {
@@ -26,6 +62,7 @@ export type Question = {
   year?: number;
   slot?: number | string;
   subject?: string;
+  chapter?: string;
   question_number?: number;
   correct_answer?: string;
   source?: string;
@@ -65,6 +102,39 @@ export type Attempt = {
   isCorrect: boolean;
   attemptedAt: string;
   sessionId: string;
+};
+export type StudentQuizQuestionResult = {
+  id: string;
+  question: string;
+  options: Record<string, string>;
+  selectedAnswer: string;
+  correctAnswer: string;
+  explanation: string;
+  answerMode: "choice" | "text";
+  chapterId: string;
+  chapterName: string;
+  sectionName: string;
+  isAttempted: boolean;
+  isCorrect: boolean;
+  order: number;
+};
+export type StudentQuizAttempt = {
+  id: string;
+  studentUid?: string;
+  title: string;
+  examId: string;
+  scoringMode: "practice" | "cbt";
+  totalQuestions: number;
+  attempted: number;
+  correct: number;
+  incorrect: number;
+  unattempted: number;
+  rawScore: number;
+  maxScore: number;
+  accuracy: number;
+  totalTimeSeconds: number;
+  completedAt: string;
+  questions: StudentQuizQuestionResult[];
 };
 export type QuestionReportStatus = "Pending Review" | "Under Review" | "Accepted" | "Rejected" | "Resolved";
 export type QuestionReport = {

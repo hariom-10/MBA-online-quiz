@@ -2,7 +2,6 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { createServer as createViteServer } from "vite";
-import { handleApi } from "./server/api/router.mjs";
 import { loadEnvFile } from "./server/utils.mjs";
 
 export { handleApi };
@@ -14,6 +13,7 @@ const root = process.cwd();
 let geminiApiKeySource = process.env.GEMINI_API_KEY ? "process environment" : "not configured";
 await loadEnvFile(resolve(root, ".env.local"), { preferLocalGeminiKey: !process.argv.includes("--preview") });
 await loadEnvFile(resolve(root, ".env"));
+const { handleApi } = await import("./server/api/router.mjs");
 console.info("[ai-import] GEMINI_API_KEY configuration:", {
   detected: Boolean(process.env.GEMINI_API_KEY),
   length: process.env.GEMINI_API_KEY?.length ?? 0,

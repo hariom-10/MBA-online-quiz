@@ -429,6 +429,12 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .account-choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:35px;width:100%;text-align:left}
 .account-choice-card{background:#fff;border:1px solid #e9e9f1;border-radius:16px;min-height:220px;padding:24px;display:flex;flex-direction:column;align-items:flex-start;text-align:left;position:relative;overflow:hidden;box-shadow:0 10px 35px #25243d08;transition:.18s}
 .account-choice-card:hover{transform:translateY(-3px);border-color:#c8c1fa;box-shadow:0 14px 35px #25243d12}
+.account-choice-card:focus-visible{outline:3px solid #8b7cf6;outline-offset:3px}
+.portal-exam-list{display:flex;align-items:center;gap:12px;margin-top:18px;color:#666c81;font-size:11px;font-weight:800;letter-spacing:1px}
+.portal-exam-list i{height:4px;width:4px;border-radius:50%;background:#a39bdd}
+.account-choice-card{min-height:230px}
+.student-choice{border-top:3px solid #8d7bf2}
+.admin-choice{border-top:3px solid #6c93d2}
 .account-choice-icon{height:47px;width:47px;border-radius:14px;background:#f0edff;color:#7262df;display:grid;place-items:center;margin-bottom:16px}
 .admin-choice .account-choice-icon{background:#eef4ff;color:#507fc5}
 .account-choice-title{font:700 20px Manrope,sans-serif;color:#2c3046}
@@ -437,6 +443,61 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .admin-choice .account-choice-link{color:#4e77b8}
 .admin-only-badge{position:absolute;right:15px;top:15px;border-radius:20px;background:#f2f5fa;color:#77849a;font-size:8px;font-weight:700;letter-spacing:.8px;padding:6px 8px}
 .demo-login-note{display:flex;align-items:center;gap:8px;color:#957631;background:#fff8e9;border:1px solid #f2e7ce;border-radius:8px;padding:11px 14px;margin-top:18px;font-size:11px;text-align:left}
+.student-category-page>.back-link{align-self:flex-start;margin-bottom:12px}
+.student-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;width:100%;margin-top:28px;text-align:left}
+.student-category-card{min-height:190px;padding:18px;border:1px solid #e9e9f1;border-radius:14px;background:#fff;box-shadow:0 10px 30px #25243d08;display:flex;flex-direction:column;align-items:flex-start;text-align:left;transition:.18s}
+.student-category-card:hover{border-color:#c8c1fa;box-shadow:0 14px 35px #25243d12}
+.student-category-card:focus-visible{outline:3px solid #8b7cf6;outline-offset:3px}
+.student-category-card .account-choice-icon{height:42px;width:42px;margin-bottom:12px}
+.student-category-name{font:700 16px Manrope,sans-serif;color:#2c3046}
+.student-category-description{font-size:11px;color:#82879a;line-height:1.55;margin-top:6px}
+.student-category-card .account-choice-link{padding-top:13px;font-size:12px}
+.category-loading{width:100%;margin-top:24px;padding:20px;border:1px dashed #deddeb;border-radius:10px;color:#85899a;text-align:center;font-size:12px}
+.category-load-error{align-items:center;gap:10px}
+.category-load-error .button{margin-left:auto}
+.category-editor-form{display:flex;flex-direction:column;gap:12px}
+.category-form-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}
+.category-active-toggle{display:flex;align-items:center;gap:8px;margin:0 0 15px;color:#5e6377;font-size:11px}
+.category-active-toggle input{accent-color:#7464e5}
+.category-form-actions{display:flex;gap:8px}
+.category-status{display:inline-flex;align-items:center;border-radius:20px;padding:5px 9px;font-size:10px;font-weight:700}
+.category-status-active{background:#eaf8f1;color:#348d6b}
+.category-status-inactive{background:#f2f2f6;color:#777c8d}
+.exam-content-badge{display:inline-flex;align-items:center;padding:5px 8px;border-radius:20px;background:#ffffff2e;color:inherit;font-size:9px;font-weight:700}
+.exam-card:disabled{cursor:not-allowed;opacity:.72}
+.exam-card:disabled:hover{transform:none}
+.exam-admin-description{display:block;max-width:250px;margin-top:4px;color:#9296a7;font-size:10px;line-height:1.45}
+.student-catalog-page{max-width:1050px;margin:0 auto}
+.exam-card-actions{display:flex;flex-wrap:wrap;gap:8px;position:relative;z-index:2;margin-top:12px}
+.exam-card-action{border:0;background:transparent;padding:0;cursor:pointer}
+.exam-card-action:hover{text-decoration:underline}
+.subject-chapter-picker>.back-link{align-self:flex-start}
+.student-subject-list,.student-chapter-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.student-subject-option,.student-chapter-option{display:flex;align-items:center;gap:11px;min-height:54px;padding:13px;border:1px solid #e9e9f1;border-radius:10px;background:#fff;color:#34384b;text-align:left;transition:.18s}
+.student-subject-option span,.student-chapter-option span{flex:1;font-size:13px;font-weight:700}
+.student-chapter-option small{color:#85899a;font-size:10px;font-weight:600;white-space:nowrap}
+.student-subject-option svg:first-child,.student-chapter-option svg:first-child{color:#7464e5}
+.student-subject-option:hover,.student-chapter-option:hover,.student-subject-option.selected,.student-chapter-option.selected{border-color:#bcb3fa;background:#f8f7ff}
+.student-chapter-panel{margin-top:16px}
+.chapter-quiz-launch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid #eeedf4}
+.chapter-quiz-launch>p{margin:0;color:#7a7f91;font-size:12px}
+.chapter-quiz-launch .button{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.chapter-quiz-error{color:#b64848!important}
+.subject-admin-panel>.form-label{max-width:420px}
+.subject-admin-selected{background:#f8f7ff}
+.subject-admin-select{padding:0;border:0;background:none;color:#5145a7;font:700 13px Manrope,sans-serif;cursor:pointer}
+.subject-admin-select:hover{text-decoration:underline}
+.chapter-admin-form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:12px;margin-bottom:16px}
+.chapter-admin-form .form-label{margin-bottom:0}
+.subject-admin-panel .category-form-actions{align-items:center}
+.mode-dark .student-subject-option,.mode-dark .student-chapter-option{background:#121826;border-color:#263248;color:#e2e8f0}
+.mode-dark .chapter-quiz-launch{border-color:#263248}
+.mode-dark .student-subject-option:hover,.mode-dark .student-chapter-option:hover,.mode-dark .student-subject-option.selected,.mode-dark .student-chapter-option.selected,.mode-dark .subject-admin-selected{background:#1b1b32;border-color:#6255ca}
+@media(max-width:650px){.category-form-fields{grid-template-columns:1fr}.category-form-actions{flex-wrap:wrap}}
+@media(max-width:650px){.exam-card-actions{gap:7px}.chapter-admin-form{grid-template-columns:1fr}.student-subject-list,.student-chapter-list{grid-template-columns:1fr}.chapter-quiz-launch{align-items:flex-start;flex-direction:column}}
+.student-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin:0 0 18px;border:1px solid #e9e9f1;border-radius:10px;background:#f7f7fb}
+.student-auth-tabs button{min-height:36px;border:0;border-radius:7px;background:transparent;color:#72778a;font-size:12px;font-weight:700}
+.student-auth-tabs button.active{background:#fff;color:#6255ca;box-shadow:0 1px 5px #25243d16}
 .login-form-card{width:min(460px,100%);margin:auto;background:#fff;border:1px solid #edecf3;border-radius:16px;padding:27px;box-shadow:0 14px 45px #25243d0b}
 .login-form-card>.back-link{margin-bottom:23px}
 .login-form-icon{width:47px;height:47px;border-radius:14px;background:#f0edff;color:#7262df;display:grid;place-items:center;margin-bottom:16px}
@@ -576,6 +637,7 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .mode-dark .breadcrumb,.mode-dark .exam-stat-card small,.mode-dark .exam-stat-values span,
 .mode-dark .section-card p,.mode-dark .chapter-card>p,.mode-dark .page-title p,.mode-dark .section-heading p,
 .mode-dark .account-choice>p,.mode-dark .login-form-card>p,.mode-dark .settings-card>p,
+.mode-dark .student-category-description,
 .mode-dark .form-hint,.mode-dark .back-link,.mode-dark .table-empty,.mode-dark .tip-banner p{color:#94a3b8}
 .mode-dark .nav-link,.mode-dark .exam-switcher>button,.mode-dark .text-button{color:#94a3b8}
 .mode-dark .nav-link:hover,.mode-dark .user-box>button:hover{background:#182236;color:#e0e7ff}
@@ -616,6 +678,25 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .mode-dark .feedback p{color:#c1c7d6}
 .mode-dark .visibility-tag{background:#17342c;color:#9fe0c1}
 .mode-dark .visibility-hidden{background:#30384b;color:#bac0ce}
+
+.student-attempt-list{display:flex;flex-direction:column;gap:10px}
+.student-attempt-card{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:16px;padding:14px;border:1px solid #efeff5;border-radius:12px}
+.student-attempt-card h3{margin:4px 0;font-size:14px;color:#303449}
+.student-attempt-card p,.student-attempt-score small{margin:0;color:#85899a;font-size:11px}
+.student-attempt-score{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.student-attempt-score>b{font-size:18px;color:#4f46e5}
+.student-attempt-question{padding:14px 0;border-bottom:1px solid #efeff5}
+.student-attempt-question:last-child{border-bottom:0}
+.student-attempt-question-heading,.student-attempt-answer{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.student-attempt-question>p{margin:10px 0;color:#303449;line-height:1.6}
+.student-attempt-question>small{color:#85899a}
+.student-attempt-answer{justify-content:flex-start;flex-wrap:wrap;margin-top:8px;color:#666b7d;font-size:12px}
+.student-attempt-explanation{font-size:12px;color:#666b7d;line-height:1.6}
+.mode-dark .student-attempt-card,.mode-dark .student-attempt-question{border-color:#1e293b}
+.mode-dark .student-attempt-card h3,.mode-dark .student-attempt-question>p{color:#f1f5f9}
+.mode-dark .student-attempt-card p,.mode-dark .student-attempt-score small,.mode-dark .student-attempt-question>small,
+.mode-dark .student-attempt-answer,.mode-dark .student-attempt-explanation{color:#94a3b8}
+@media(max-width:720px){.student-attempt-card{grid-template-columns:1fr auto}.student-attempt-card>.button{grid-column:1/-1}.student-attempt-score{align-items:flex-start}}
 .mode-dark .settings-logo-preview{background:#fff;border-color:#3a4256}
 .mode-dark .login-brand b,.mode-dark .login-footer,.mode-dark .login-header-note{color:#d4d9e6}
 .mode-dark .login-header-note svg{color:#76c7a5}
@@ -625,6 +706,18 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
 .mode-dark .admin-choice .account-choice-icon{background:#24334a;color:#a8c8ff}
 .mode-dark .account-choice-link{color:#c3baff}
 .mode-dark .admin-only-badge{background:#283044;color:#b9c3d6}
+.mode-dark .portal-exam-list{color:#cbd5e1}
+.mode-dark .portal-exam-list i{background:#8b7cf6}
+.mode-dark .student-category-card{background:#121826;border-color:#1e293b;color:#e2e8f0}
+.mode-dark .student-category-card:hover{border-color:rgba(99,102,241,.5);background:#172033}
+.mode-dark .student-category-name{color:#f8fafc}
+.mode-dark .category-loading{border-color:#30384b;color:#aab2c5}
+.mode-dark .category-active-toggle{color:#c1c7d6}
+.mode-dark .category-status-inactive{background:#283044;color:#b9c3d6}
+.mode-dark .exam-admin-description{color:#aab2c5}
+.mode-dark .student-auth-tabs{background:#0f1523;border-color:#1e293b}
+.mode-dark .student-auth-tabs button{color:#94a3b8}
+.mode-dark .student-auth-tabs button.active{background:#1e293b;color:#c3baff}
 .mode-dark .admin-login-security{color:#aeb7ca}
 .mode-dark .created-credentials{background:#17342c;border-color:#397c64;color:#b8eed8}
 .mode-dark .created-credentials dl{background:#202638}
@@ -877,9 +970,13 @@ td small{display:block;color:#a0a4b1;margin-top:4px;font-size:8px}
  .chapter-card .button,.hero .button{font-size:12px;padding:10px}
  .picker-footer{font-size:11px}
  .account-choice{padding:40px 0}
+ .account-choice>h1{font-size:clamp(27px,8vw,36px);line-height:1.15}
  .account-choice-grid{grid-template-columns:1fr;gap:12px;margin-top:24px}
+ .student-category-grid{grid-template-columns:1fr;gap:10px;margin-top:20px}
+ .student-category-card{min-height:150px;padding:16px}
  .account-choice-card{min-height:190px;padding:19px}
  .account-choice-description{font-size:12px}
+ .portal-exam-list{gap:9px;font-size:10px}
  .login-header-note{font-size:0}
  .login-header-note svg{height:20px;width:20px}
  .login-form-card{padding:19px}
@@ -3089,4 +3186,3 @@ input:focus, textarea:focus, select:focus {
   background: rgba(99, 102, 241, 0.25);
   color: inherit;
 }
-
