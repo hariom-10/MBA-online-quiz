@@ -2,6 +2,7 @@ import { createHash, pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual } from
 import { adminSessions, sessionCookie, studentSessionCookie, sessionLifetimeMs, json, parseCookies, cookieOptions, sameOrigin, currentAdmin, currentStudent, createAdminSession, createStudentSession, bodyBuffer } from "../utils.mjs";
 import { extractPdfText, isUsablePdfText, recognizePdf, analyze, streamPdfOcr } from "./pdfHandler.mjs";
 import { db, hasAdminCredentials } from "../adminFirebase.mjs";
+import { defaultCatalogCategories, defaultCatalogExams, seedCatalogDefaults } from "../catalogDefaults.mjs";
 
 const defaultExamCategories = [
   { id: "mba", name: "MBA", description: "CAT, CMAT, MAT, XAT and management entrance preparation" },
@@ -48,6 +49,7 @@ async function ensureExamCategories() {
       if (!currentInitialization.exists) throw error;
     }
   }
+  await seedCatalogDefaults(db, "examCategories", "examCategoriesV2", defaultCatalogCategories);
   const current = await collection.get();
   return current.docs
     .map((document) => ({ id: document.id, ...document.data() }))
@@ -74,6 +76,11 @@ async function ensurePlatformExams() {
       if (!currentInitialization.exists) throw error;
     }
   }
+  const catalogCategoryIds = new Map(defaultCatalogCategories.map((category) => [
+    category.id,
+    categories.find((current) => String(current.name).toLowerCase() === category.name.toLowerCase())?.id ?? category.id,
+  ]));
+  await seedCatalogDefaults(db, "platformExams", "platformExamsV2", defaultCatalogExams, catalogCategoryIds);
   const current = await collection.get();
   return current.docs
     .map((document) => ({ id: document.id, ...document.data() }))

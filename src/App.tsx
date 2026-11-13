@@ -32,7 +32,7 @@ type LoginPage = "choose" | "student-category" | LoginKind;
 type AdminArea = "dashboard" | "students" | "create-student" | "questions" | "delete-questions" | "sections" | "chapters" | "categories" | "exams" | "subjects" | "statistics" | "settings" | "reports" | "ai-import" | "api-keys";
 const defaultSettings: SiteSettings = {
   id: "public",
-  title: "MBA Prep",
+  title: "Multi Exam Online Quiz",
   welcomeMessage: "Build your confidence, one focused practice session at a time.",
   logoUrl: "",
   theme: "violet",
@@ -3103,7 +3103,7 @@ function LoginPortal({ darkMode, onToggleTheme, kind, busy, error, onChoose, onS
           onClick={(event) => { event.preventDefault(); onBack(); }}
         >
           <span className="brand-mark"><GraduationCap size={23} /></span>
-          <span><b>MBA Prep</b><small>EXAM PRACTICE</small></span>
+          <span><b>Multi Exam Online Quiz</b><small>EXAM PRACTICE</small></span>
         </a>
         <div className="login-header-actions">
           <ThemeToggle darkMode={darkMode} onToggle={onToggleTheme} />
