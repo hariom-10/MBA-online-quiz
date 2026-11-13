@@ -1,4 +1,4 @@
-﻿# MBA Exam Preparation & Question Practice
+# Multi Exam Online Quiz
 
 A responsive React + TypeScript multi-exam preparation app. Exam categories, exams, subjects, chapters, and platform questions are managed dynamically; the existing CAT, CMAT, MAT and XAT practice banks and quiz experience remain available.
 

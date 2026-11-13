@@ -43,4 +43,4 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": types[extname(filePath)] || "application/octet-stream" }); res.end(body);
   } catch { res.writeHead(404); res.end("Not found"); }
 });
-server.listen(port, "0.0.0.0", () => console.log(`MBA Prep ${preview ? "preview" : "dev"} server: http://localhost:${port}`));
+server.listen(port, "0.0.0.0", () => console.log(`Multi Exam Online Quiz ${preview ? "preview" : "dev"} server: http://localhost:${port}`));

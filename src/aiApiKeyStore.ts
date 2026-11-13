@@ -217,7 +217,7 @@ export async function validateApiKey(provider: AiProvider, secretKey: string, mo
           "Authorization": `Bearer ${secretKey.trim()}`,
           "Content-Type": "application/json",
           "HTTP-Referer": window.location.origin,
-          "X-Title": "MBA Quiz App",
+          "X-Title": "Multi Exam Online Quiz",
         },
         body: JSON.stringify({
           model: targetModel,
@@ -313,7 +313,7 @@ export async function callAiApi(
         "Authorization": `Bearer ${secretKey.trim()}`,
         "Content-Type": "application/json",
         "HTTP-Referer": window.location.origin,
-        "X-Title": "MBA Exam Prep",
+        "X-Title": "Multi Exam Online Quiz",
       },
       body: JSON.stringify({
         model: targetModel,
